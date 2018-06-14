@@ -1,9 +1,11 @@
 class Block {
   constructor(params) {
-    let {label, height, parent} = params || {};
-    this.label = label || '';
+    let {miner, height, parent, time, fork} = params || {};
+    this.miner = miner || '';
     this.height = height || (parent && 1 + parent.height) || 0;
     this.parent = parent || null;
+    this.fork = fork || 0;
+    this.time = time || 0;
     if (parent && !(parent instanceof Block)) {
       console.error("parent is not a block", parent);
     }
@@ -34,7 +36,73 @@ class Block {
   }
 }
 
-{
+class BlockRegistry {
+  static ensureInit() {
+    if (!BlockRegistry.blocks) BlockRegistry.blocks = [];
+  }
+
+  static genesis() {
+    BlockRegistry.ensureInit();
+    if ( BlockRegistry.blocks[0] && BlockRegistry.blocks[0][0])
+      return BlockRegistry.blocks[0][0];
+
+    let block = new Block();
+    BlockRegistry.add(block);
+    return block;
+  }
+
+  static add(block) {
+    BlockRegistry.ensureInit();
+    if (!(block instanceof Block)) return;
+    let {blocks} = BlockRegistry;
+    if (!blocks[block.height]) blocks[block.height] = [];
+    blocks[block.height].push(block);
+  }
+
+  static getNextForkId(h) {
+    BlockRegistry.ensureInit();
+    return BlockRegistry.blocks[h] ? BlockRegistry.blocks[h].length : 0;
+  }
+
+  static draw() {
+    let {blocks} = BlockRegistry;
+    if (!blocks) return;
+
+    let i0 = Math.max(0, blocks.length - 30);
+    let nForks = blocks.reduce(Math.max, 1);
+    function getPos(i, j) {
+      return createVector(20 + (i - i0) * 40, height - 20 - j * 20);
+    };
+
+    for (var i = i0; i < blocks.length; i++) {
+      if (!blocks[i]) continue;
+
+      for (var j = 0; j < blocks[i].length; j++) {
+        let block = blocks[i][j];
+        var pos = block.pos;
+        if (!pos) {
+          block.pos = pos = getPos(i, j);
+        }
+
+        let {x, y} = pos;
+
+        rectMode(CENTER);
+        fill(255);
+        noStroke();
+        rect(x, y, 10, 10);
+
+        let {parent} = block;
+        if (!parent || !parent.pos) continue;
+
+        strokeWeight(1);
+        stroke(255);
+        line(x, y, parent.pos.x, parent.pos.y);
+      }
+    }
+  }
+}
+
+if (false) {
   let b0 = new Block();
   let b1 = new Block({ parent: b0 });
   let b2 = new Block({ parent: b1 });
@@ -62,28 +130,6 @@ class Edge {
   }
 }
 
-class Node {
-  constructor(graph, key, kind) {
-    this.kind = kind || 'node';
-    this.graph = graph;
-    this.key = key;
-    this.peers = {};
-    this.incoming = [];
-    this.outgoing = [];
-  }
-
-  update() {
-    var blocks = [];
-  }
-}
-
-class Tip {
-  constructor(height, fork) {
-    this.height = height || 0;
-    this.fork = fork || 0;
-  }
-}
-
 class Graph {
   constructor() {
     this.vertices = {};
@@ -91,6 +137,7 @@ class Graph {
     this.radj = {};
     this.radius = 15;
     this.time = 0;
+    this.edgeDelay = 100;
   }
 
   draw() {
@@ -159,16 +206,17 @@ class Graph {
     for (let vk of vks) {
       var {kind, props} = this.vertices[vk];
       var vp = this.vertices[vk].props;
-      if (!vp.tip) vp.tip = new Block();
+      if (!vp.tip) { vp.tip = BlockRegistry.genesis(); }
+
       if (!vp.inbox) vp.inbox = [];
       if (!vp.outbox) vp.outbox = [];
 
-      let {tip, inbox, outbox} = vp;
 
       function isLongerChain(tip, b1) {
         return !tip || b1.height > tip.height;
       }
 
+      let {inbox, outbox} = vp;
       let edges = this.getEdges(vk);
 
       function send(vk1, message) {
@@ -187,9 +235,14 @@ class Graph {
         }
       }
 
+      function updateTip(block) {
+        //console.log(vk, "update tip:", {from: tip, to: block});
+        vp.tip = block;
+      }
+
       var received = null;
       if (inbox.length) {
-        received = inbox.filter(({message}) => message instanceof Block && isLongerChain(tip, message));
+        received = inbox.filter(({message}) => message instanceof Block && isLongerChain(vp.tip, message));
       }
 
       if (received) {
@@ -208,30 +261,32 @@ class Graph {
         }
 
         if (best) {
-          console.log(vk, "update tip:", {from: tip, to: best.message});
-          vp.tip = best.message;
-          broadcast(tip);
+          updateTip(best.message);
+          broadcast(vp.tip);
         }
       }
 
-      if (this.time % 50 === Math.floor(10 * Math.random()) && tip) {
+      // TODO broadcast new node entry message
+      if (this.time % 10000 === Math.floor(1000 * Math.random()) && vp.tip) {
         //console.log(vk, 'periodic broadcast', tip);
-        broadcast(tip);
+        broadcast(vp.tip);
       }
 
       if (kind === 'miner') {
-        let {hashrate: lambda = 1e-4} = props;
-        if (Math.random() < lambda / (1 + nMiners)) {
-          let mined = new Block({parent: tip, label: `mined by ${vk}`, time: this.time});
-          console.log(vk, 'mined block', mined);
+        let {hashrate: lambda = 2e-5} = props;
+        if (Math.random() < lambda / (0.1 + nMiners)) {
+          let mined = new Block({parent: vp.tip, miner: vk, time: this.time, fork: BlockRegistry.getNextForkId(vp.tip.height)});
+          BlockRegistry.add(mined);
+          console.log(vk, 'mined block', mined, this.time);
+          updateTip(mined);
           broadcast(mined);
-          vp.tip = mined;
         }
       }
 
       while (vp.inbox.pop());
 
       //if (outbox.length) console.log(vk, 'outbox', Array.from(outbox));
+      let {edgeDelay} = this;
       while (outbox) {
         let out = outbox.pop();
         if (!out) break;
@@ -241,7 +296,7 @@ class Graph {
         if (!edge.props.transit) edge.props.transit = {items: []};
         let {transit} = edge.props;
         let {items} = transit;
-        items.push({initTime: 2, timeLeft: 2, from: vk, to: target, message});
+        items.push({initTime: edgeDelay, timeLeft: edgeDelay, from: vk, to: target, message});
       }
     }
 
@@ -274,7 +329,7 @@ class Graph {
   }
 
   drawVertices() {
-    strokeWeight(0);
+    noStroke();
     ellipseMode(CENTER);
 
     let {vertices: vs, adj, radius} = this;
@@ -292,34 +347,60 @@ class Graph {
     for (let vk of vks) {
       var v = vs[vk];
       let h = v.props && v.props.tip ? v.props.tip.height : 0;
-      let opa = minH === maxH ? 255 : 155 + Math.floor(100 * (h - minH) / (maxH - minH));
+      if (!v.props.opacity) v.props.opacity = 30;
+      let {opacity} = v.props;
+      let opa1 = minH === maxH ? 255 : 155 + Math.floor(100 * (h - minH) / (maxH - minH));
+      let opa = Math.floor(opacity + (opa1 < opacity ? 0.3 : 0.15) * (opa1 - opacity));
+      if (opa > 253) opa = 255;
+      v.props.opacity = opa;
+
+      strokeWeight(2);
+      let f = (v && v.props && v.props.tip ? v.props.tip.fork : 0);
+      stroke(128 + 128 * (f % 3 == 0), 128 + 128 * (f % 4 == 1), 128 + 128 * (f % 5 == 2));
       if (v.kind === 'miner') {
-        fill(255, 0, 0, opa);
+        fill(255, 80, 80, opa);
       } else {
         fill(255, 255, 255, opa);
       }
 
       ellipse(v.pos.x, v.pos.y, 2 * radius, 2 * radius);
 
-      fill(0, 0, 0);
+      fill(0, 0, 0, 255);
+      noStroke();
       textAlign(CENTER);
       textSize(10);
-      text(`${vk}\n${h}`, v.pos.x, v.pos.y);
+      text(`${vk}\n${h}`, Math.round(v.pos.x), Math.round(v.pos.y));
     }
 
   }
 
   drawEdges() {
     let {vertices: vs, adj: adj} = this;
-    strokeWeight(1);
-    stroke(200);
-
     for (let vk1 in adj) {
       let {pos: p1} = vs[vk1];
       for (let vk2 in adj[vk1]) {
+        let v2 = vs[vk2];
+        let {pos: p2} = v2;
 
-        let {pos: p2} = vs[vk2];
+
+        strokeWeight(1);
+        stroke(200);
         line(p1.x, p1.y, p2.x, p2.y);
+
+        let edge = this.adj[vk1][vk2];
+        if (!edge.props || !edge.props.transit || !edge.props.transit.items) continue;
+        let {transit: {items}} = edge.props;
+        for (let {initTime: tMax, timeLeft: t0, from, to} of items) {
+          let posFrom = vs[from].pos, posTo = vs[to].pos;
+          let dir = posTo.copy().sub(posFrom);
+          let u = 1 - t0 / tMax;
+          let pos1 = posFrom.copy().add(dir.copy().mult(u));
+          let pos2 = posFrom.copy().add(dir.copy().mult(u + 0.05 > 1 ? 1 : u + 0.05));
+
+          strokeWeight(3);
+          stroke(180, 240, 255, 180);
+          line(pos1.x, pos1.y, pos2.x, pos2.y);
+        }
       }
     }
   }
@@ -363,7 +444,7 @@ class Graph {
       dt: dt = 8e-1,
       center: center = null,
       cS: cS = 2e-2,
-      cA: cA = 1e-3,
+      cA: cA = 4e-4,
       cR: cR = 500,
       cD: cD = 0.35,
       range: range = 500
@@ -391,7 +472,8 @@ class Graph {
       centroid.add(vs[vk].pos);
     }
 
-    centroid.div(vks.length);
+    if (vks.length)
+      centroid.div(vks.length);
 
     let centerForce = cf(cS, 1, centroid, center, 1e8);
     for (let vk of vks) {
@@ -425,6 +507,7 @@ class Graph {
       let f = forces[vk];
       f.mult(dt).limit(1e3);
       v.vel.add(f.copy().mult(dt));
+      if (v.vel.mag() < 1e-1) v.vel.mult(0);
       v.pos.add(v.vel.limit(1e3).copy().mult(dt));
     }
   }
@@ -441,18 +524,20 @@ var connectRadius = 200;
 var kind = 'node';
 
 function setup() {
-  createCanvas(1600, 800);
-  for (var i = 0; i < 25; i++) {
+  createCanvas(1600, 1000);
+  frameRate(60);
+
+  for (var i = 0; i < 80; i++) {
     addConnectedNode(createVector(
-      200 + 400 * Math.random(),
+      100 + 10 * i + 400 * Math.random(),
       200 + 400 * Math.random()
-    ), 3, 0.55);
+    ), 3, 0.55, 300);
   }
 
-  for (var i = 0; i < 8; i++) {
+  for (var i = 0; i < 12; i++) {
     addConnectedNode(createVector(
-      0 + 400 * Math.random(),
-      (i % 2 == 0 ? 200 : 300) + 400 * Math.random()
+      (i % 2 == 0 ? 0 : 1300) + 400 * Math.random(),
+       800 * Math.random()
     ), 3, 0.55, 1000, 'miner');
   }
 }
@@ -476,6 +561,8 @@ function draw() {
   ellipseMode(CENTER);
   noFill();
   ellipse(mouseX, mouseY, 2 * connectRadius, 2 * connectRadius);
+
+  BlockRegistry.draw();
 }
 
 function mousePos() { return createVector(mouseX, mouseY); }
@@ -508,6 +595,7 @@ function mousePressed() {
 function keyPressed() {
   let keyHandlers = {
     'M': () => { kind = kind === 'miner' ? 'node' : 'miner'; },
+    'C': () => { graph = new Graph(); },
     'L': () => { doLayout = !doLayout; },
     'R': () => { layoutIters = 0; },
     'S': () => { layoutIters *= 2; },
