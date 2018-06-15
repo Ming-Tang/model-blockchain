@@ -37,3 +37,6 @@ html, body, #root {
   padding: 0;
   display: block;
 }
+
+#buttons { display: flex; }
+

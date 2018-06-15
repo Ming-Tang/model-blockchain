@@ -18,6 +18,8 @@
       <h2>Instructions</h2>
       <p>Each node shows its name and its block height. Red nodes are mining nodes.</p>
       <p>The status of the blockchain is shown on the bottom.</p>
+      <p>Individual blocks are color-coded in blockchain diagram and around
+      edges of nodes.</p>
       <p>Press <kbd>T</kbd> to toggle between displaying blocks by time or by block height.</p>
       <p>Press <kbd>M</kbd> to toggle between adding non-mining and mining nodes.</p>
       <p>Press <kbd>C</kbd> to clear graph, press L to enable/disable automatic layout.</p>
@@ -30,10 +32,13 @@
     <div id='controls'>
       <h2>Controls</h2>
       <div>
-        <div id='toggle-miner-btn'></div>
-        <div id='toggle-layout-btn'></div>
-        <div id='toggle-timeline-btn'></div>
-        <div id='clear-btn'></div>
+        <h3>Actions</h3>
+        <div id='buttons'>
+          <div id='toggle-miner-btn'></div>
+          <div id='toggle-layout-btn'></div>
+          <div id='toggle-timeline-btn'></div>
+          <div id='clear-btn'></div>
+        </div>
       </div>
       <div>
         <h3>Blockchain</h3>

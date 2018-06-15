@@ -714,7 +714,7 @@ function setup() {
 
   createButton('Toggle auto layout')
     .mouseClicked(keyHandlers['L'])
-    .parent('toggle-miner-btn');
+    .parent('toggle-layout-btn');
 
   createButton('Toggle timeline/block height')
     .mouseClicked(keyHandlers['T'])
@@ -766,6 +766,13 @@ function draw() {
   }
 
   BlockRegistry.draw(timelineMode ? 'time' : 'height', graph.time);
+
+  fill(255);
+  noStroke();
+  textSize(14);
+  textAlign(RIGHT);
+  let statusText = `Block time: ${graph.props.blockTime} s\nPropagation delay: ${graph.props.edgeDelay} s`;
+  text(statusText, width - 10, height - 40);
 }
 
 function mousePos() { return createVector(mouseX, mouseY); }
