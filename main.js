@@ -168,9 +168,16 @@ class BlockRegistry {
 
     if (mode === 'time') {
       strokeWeight(1);
-      stroke(255, 255, 255, 50);
+      stroke(255, 255, 255, 80);
       let x1 = margin + dxTime(maxTime);
       line(x1, height - 40, x1, height - 20);
+
+      let blockTimeTicks = graph.props.blockTime * ticksPerSecond;
+      let t0 = Math.ceil(minTime / ticksPerSecond) * ticksPerSecond;
+      for (var t = t0; t < Math.max(maxTime + 5 * ticksPerSecond, t0 + 25 * blockTimeTicks); t += blockTimeTicks) {
+        let x1 = margin + dxTime(t);
+        line(x1, height - 5, x1, height - 10);
+      }
     }
   }
 }
@@ -771,8 +778,17 @@ function draw() {
   noStroke();
   textSize(14);
   textAlign(RIGHT);
-  let statusText = `Block time: ${graph.props.blockTime} s\nPropagation delay: ${graph.props.edgeDelay} s`;
-  text(statusText, width - 10, height - 40);
+
+  let blockHeight = BlockRegistry.blocks.length - 1;
+  let totalBlocks = BlockRegistry.blocks.reduce((s, {length}) => s + length, 0);
+  let orphanRate = 1 - (1.0 * (1 + blockHeight)) / totalBlocks;
+  let statusText = (
+    `Block time: ${graph.props.blockTime} s\n`
+    + `Propagation delay: ${graph.props.edgeDelay} s\n`
+    + `Block height: ${blockHeight}, Total blocks: ${totalBlocks}\n`
+    + `Orphan rate: ${(orphanRate * 100).toFixed(2)} %`
+  );
+  text(statusText, width - 10, 20);
 }
 
 function mousePos() { return createVector(mouseX, mouseY); }
