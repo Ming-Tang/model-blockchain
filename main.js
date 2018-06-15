@@ -1,4 +1,5 @@
-let targetFrameRate = 15;
+'use strict';
+let targetFrameRate = 20;
 let updatesPerFrame = 1;
 let ticksPerSecond = targetFrameRate * updatesPerFrame;
 let second = ticksPerSecond;
@@ -103,7 +104,7 @@ class BlockRegistry {
     }
   }
 
-  static draw(mode = 'time') {
+  static draw(mode = 'time', maxTime = 0) {
     let {blocks} = BlockRegistry;
     if (!blocks || !blocks.length || !blocks[0].length) return;
 
@@ -115,16 +116,21 @@ class BlockRegistry {
     let i0 = Math.max(0, blocks.length - Math.ceil(maxWidth / blockWidth));
     let allBlocks = Array.from(BlockRegistry.allBlocks()).filter(({height}) => height >= i0);
     let minTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.min(mtime, time)), blocks[0][0].time) : 0;
-    let maxTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), blocks[0][0].time) : 0;
+    if (!maxTime)
+      maxTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), blocks[0][0].time) : 0;
     //console.log(minTime, maxTime);
 
     let totalWidthT = Math.min(width - 2 * margin, 10 * maxTime / ticksPerSecond);
 
+    function dxTime(time) {
+      return (totalWidthT * (1.0 * (time - minTime))) / (1.0 * (maxTime - minTime));
+    }
+
     function getPos(i, j, {time, fork}) {
       let j1 = fork || j;
       if (mode === 'time') {
-        let dx = (totalWidthT * (1.0 * (time - minTime))) / (1.0 * (maxTime - minTime));
-        return createVector(margin + Math.max(0, dx), height - 20 - j1 * 20);
+        let dx = dxTime(time);
+        return createVector(margin + dx, height - 20 - j1 * 20);
       }
 
       return createVector(margin + (i - i0) * blockWidth, height - 20 - j1 * 20);
@@ -158,6 +164,13 @@ class BlockRegistry {
         fill(r, g, b);
         rect(x, y, 4, 10);
       }
+    }
+
+    if (mode === 'time') {
+      strokeWeight(1);
+      stroke(255, 255, 255, 50);
+      let x1 = margin + dxTime(maxTime);
+      line(x1, height - 40, x1, height - 20);
     }
   }
 }
@@ -197,7 +210,11 @@ class Graph {
     this.radj = {};
     this.radius = 15;
     this.time = 0;
-    this.props = props || {};
+    this.props = props || {
+      edgeDelay: 1,
+      blockTime: 5,
+      defaultHashrate: 1
+    };
   }
 
   draw() {
@@ -258,11 +275,7 @@ class Graph {
   updateNodes() {
     let vks = this.getVertexKeys();
 
-    let {
-      edgeDelay = 1,
-      blockTime = 5,
-      defaultHashrate = 1
-    } = this.props;
+    let {edgeDelay, blockTime, defaultHashrate} = this.props;
 
     let nMiners = 0;
     let totalHashrate = 0;
@@ -654,8 +667,11 @@ var nPeers = 8;
 var spreadFactor = 0.3;
 var timelineMode = true;
 
+var keyHandlers;
+let controls = {};
+
 function setup() {
-  createCanvas(1800, 1200);
+  createCanvas(1800, 1200).parent('main-canvas');
   frameRate(targetFrameRate);
 
   for (var i = 0; i < 80; i++) {
@@ -671,14 +687,56 @@ function setup() {
        800 * Math.random()
     ), 3, 0.55, 1000, 'miner');
   }
+
+  let controlsDecl = {
+    blockchain: [
+      { obj: () => graph.props, key: 'blockTime', label: '', create: () => createSlider(1, 60, 0.5) },
+      { obj: () => graph.props, key: 'edgeDelay', label: '', create: () => createSlider(1, 10, 0.1) }
+    ]
+  };
+
+  for (let pkey of Object.keys(controlsDecl)) {
+    let cdecls = controlsDecl[pkey];
+    if (!controls.hasOwnProperty(pkey)) controls[pkey] = {};
+    let cs = controls[pkey];
+    for (let cdecl of cdecls) {
+      let {obj, key, label, create} = cdecl;
+      let control = create();
+      control.parent(`c-${pkey}-${key}`);
+      cs[key] = { control, cdecl };
+      control.value(obj()[key]);
+    }
+  }
+
+  createButton('Toggle add node/miner')
+    .mouseClicked(keyHandlers['M'])
+    .parent('toggle-miner-btn');
+
+  createButton('Toggle auto layout')
+    .mouseClicked(keyHandlers['L'])
+    .parent('toggle-miner-btn');
+
+  createButton('Toggle timeline/block height')
+    .mouseClicked(keyHandlers['T'])
+    .parent('toggle-timeline-btn');
+
+  createButton('Reset')
+    .mouseClicked(keyHandlers['C'])
+    .parent('clear-btn');
 }
 
 function draw() {
   background(0);
 
-  for (var i = 0; i < updatesPerFrame; i++) graph.update();
+  for (let pkey of Object.keys(controls)) {
+    for (let ckey of Object.keys(controls[pkey])) {
+      let { control, cdecl: {obj, key} } = controls[pkey][ckey];
+      let o = obj();
+      if (o && key) o[key] = control.value();
+    }
+  }
 
-  let exp1 = (x) => x > 1 ? Math.exp(-(x - 1)) : 1;
+  for (var i = 0; i < updatesPerFrame; i++) graph.update();
 
   if (doLayout) {
     for (var i = 0; i < 2; i++) {
@@ -707,7 +765,7 @@ function draw() {
     );
   }
 
-  BlockRegistry.draw(timelineMode ? 'time' : 'height');
+  BlockRegistry.draw(timelineMode ? 'time' : 'height', graph.time);
 }
 
 function mousePos() { return createVector(mouseX, mouseY); }
@@ -735,35 +793,38 @@ function addConnectedNode(pos, n, c, radius = 10000, kind = 'node') {
 
 function mousePressed() {
   if (touches && touches.length > 1) return;
+  if (mouseX < 0 || mouseX > width || mouseY < 0 || mouseY > height) return;
+
   addConnectedNode(mousePos(), nPeers, spreadFactor, connectRadius, kind);
 }
 
+keyHandlers = {
+  'M': () => { kind = kind === 'miner' ? 'node' : 'miner'; },
+  'C': () => { graph = new Graph(); counter = 0; BlockRegistry.reset(); },
+  'L': () => { doLayout = !doLayout; },
+  'R': () => { layoutIters = 0; },
+  'S': () => { layoutIters *= 2; },
+  'T': () => { timelineMode = !timelineMode; },
+  [192]: () => { connectRadius = 50; },
+  '1': () => { connectRadius = 100; },
+  '2': () => { connectRadius = 200; },
+  '3': () => { connectRadius = 300; },
+  '4': () => { connectRadius = 400; },
+  '5': () => { connectRadius = 500; },
+  '6': () => { connectRadius = 600; },
+  '7': () => { connectRadius = 700; },
+  '8': () => { connectRadius = 800; },
+  '9': () => { connectRadius = 900; },
+  '0': () => { connectRadius = 50; },
+  [189]: () => { nPeers = Math.max(1, nPeers - 1); },
+  [187]: () => { nPeers = Math.min(50, nPeers + 1); },
+  // [ ]
+  [219]: () => { spreadFactor = Math.max(0, spreadFactor - 0.05); },
+  [221]: () => { spreadFactor = Math.min(1, spreadFactor + 0.05); },
+};
+
 function keyPressed() {
   console.log(key, keyCode);
-  let keyHandlers = {
-    'M': () => { kind = kind === 'miner' ? 'node' : 'miner'; },
-    'C': () => { graph = new Graph(); counter = 0; BlockRegistry.reset(); },
-    'L': () => { doLayout = !doLayout; },
-    'R': () => { layoutIters = 0; },
-    'S': () => { layoutIters *= 2; },
-    'T': () => { timelineMode = !timelineMode; },
-    [192]: () => { connectRadius = 50; },
-    '1': () => { connectRadius = 100; },
-    '2': () => { connectRadius = 200; },
-    '3': () => { connectRadius = 300; },
-    '4': () => { connectRadius = 400; },
-    '5': () => { connectRadius = 500; },
-    '6': () => { connectRadius = 600; },
-    '7': () => { connectRadius = 700; },
-    '8': () => { connectRadius = 800; },
-    '9': () => { connectRadius = 900; },
-    '0': () => { connectRadius = 50; },
-    [189]: () => { nPeers = Math.max(1, nPeers - 1); },
-    [187]: () => { nPeers = Math.min(50, nPeers + 1); },
-    // [ ]
-    [219]: () => { spreadFactor = Math.max(0, spreadFactor - 0.05); },
-    [221]: () => { spreadFactor = Math.min(1, spreadFactor + 0.05); },
-  };
   if (key in keyHandlers) { return keyHandlers[key](); }
   if (keyCode in keyHandlers) { return keyHandlers[keyCode](); }
 }

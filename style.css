@@ -1,0 +1,39 @@
+html, body, #root {
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  font-family: sans-serif;
+}
+
+#root {
+  display: grid;
+  grid-template-areas:
+    'a a'
+    'b c';
+  grid-template-rows: auto auto;
+  grid-template-columns: auto auto;
+}
+
+#main-canvas {
+  margin: 0;
+  padding: 0;
+  background: #444;
+  grid-area: a;
+}
+
+#instructions {
+  padding: 1em;
+  grid-area: b;
+}
+
+#controls {
+  grid-area: c;
+}
+
+#main-canvas canvas {
+  margin: 0;
+  padding: 0;
+  display: block;
+}
