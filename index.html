@@ -5,12 +5,22 @@
     src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.6.1/p5.js"
     integrity="sha256-bjrEFapFMXY8p4JKqn5ZHF57L6oogHA/SHj1h67+ix8="
     crossorigin="anonymous"></script>
+  <meta name="viewport" content="width=device-width" />
   <script src="main.js"></script>
 </head>
 <body>
-  <p>Each node shows its name and its block height. Red nodes are mining nodes.</p>
-  <p>The status of the blockchain is shown on the bottom.</p>
-  <p>Press M to toggle between adding non-mining and mining nodes.</p>
-  <p>Press C to clear graph, press L to enable/disable automatic layout.</p>
+  <div id='instructions'>
+    <h3>Instructions</h3>
+    <p>Each node shows its name and its block height. Red nodes are mining nodes.</p>
+    <p>The status of the blockchain is shown on the bottom. Press T to toggle
+    between displaying blocks by time or by block height.</p>
+    <p>Press M to toggle between adding non-mining and mining nodes.</p>
+    <p>Press C to clear graph, press L to enable/disable automatic layout.</p>
+    <h4>Adding nodes</h4>
+    <p>Click to add a node under the cursor position.</p>
+    <p>Press [ and ] to adjust tendency to connect to closest peers.</p>
+    <p>Press - and = to adjust number of peers to connect to.</p>
+    <p>Press number keys 0-9 to adjust radius of peers to connect to.</p>
+  </div>
 </body>
 </html>

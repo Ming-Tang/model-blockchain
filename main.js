@@ -4,6 +4,11 @@ let ticksPerSecond = targetFrameRate * updatesPerFrame;
 let second = ticksPerSecond;
 let dTime = 1.0 / ticksPerSecond;
 
+function vlerp(t, v1, v2) {
+  let d = v2.copy().sub(v1).mult(t);
+  return v1.copy().add(d);
+}
+
 class Block {
   constructor(params) {
     let {miner, height, parent, time, fork} = params || {};
@@ -20,7 +25,7 @@ class Block {
   get colorCode() {
     let colorCodes = [
       [0, 2, 2],
-      [1, 0, 0],
+      //[1, 0, 0],
       [2, 2, 0],
       [0, 0, 1],
       [2, 0, 2],
@@ -59,6 +64,8 @@ class Block {
 }
 
 class BlockRegistry {
+  static reset() { BlockRegistry.blocks = []; }
+
   static ensureInit() {
     if (!BlockRegistry.blocks) BlockRegistry.blocks = [];
   }
@@ -96,25 +103,31 @@ class BlockRegistry {
     }
   }
 
-  static draw() {
+  static draw(mode = 'time') {
     let {blocks} = BlockRegistry;
-    if (!blocks) return;
+    if (!blocks || !blocks.length || !blocks[0].length) return;
 
-    let i0 = Math.max(0, blocks.length - 30);
     let nForks = blocks.reduce(Math.max, 1);
 
+    let blockWidth = 30;
+    let margin = 20;
+    let maxWidth = width - 2 * margin;
+    let i0 = Math.max(0, blocks.length - Math.ceil(maxWidth / blockWidth));
     let allBlocks = Array.from(BlockRegistry.allBlocks()).filter(({height}) => height >= i0);
-    let minTime = allBlocks.reduce(((mtime, {time}) => Math.min(mtime, time)), 0);
-    let maxTime = allBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), 0);
+    let minTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.min(mtime, time)), blocks[0][0].time) : 0;
+    let maxTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), blocks[0][0].time) : 0;
     //console.log(minTime, maxTime);
 
-    let totalWidth = Math.min(width - 100, 10 * maxTime / ticksPerSecond);
+    let totalWidthT = Math.min(width - 2 * margin, 10 * maxTime / ticksPerSecond);
 
     function getPos(i, j, {time, fork}) {
       let j1 = fork || j;
-      let dx = (totalWidth * (1.0 * (time - minTime))) / (1.0 * (maxTime - minTime));
-      return createVector(50 + Math.max(0, dx), height - 20 - j1 * 20);
-      //return createVector(20 + (i - i0) * 40, height - 20 - j1 * 20);
+      if (mode === 'time') {
+        let dx = (totalWidthT * (1.0 * (time - minTime))) / (1.0 * (maxTime - minTime));
+        return createVector(margin + Math.max(0, dx), height - 20 - j1 * 20);
+      }
+
+      return createVector(margin + (i - i0) * blockWidth, height - 20 - j1 * 20);
     };
 
     for (var i = i0; i < blocks.length; i++) {
@@ -122,12 +135,18 @@ class BlockRegistry {
 
       for (var j = 0; j < blocks[i].length; j++) {
         let block = blocks[i][j];
-        block.pos = getPos(i, j, block);
+        block.targetPos = getPos(i, j, block);
+
+        if (!block.pos) {
+          block.pos = block.targetPos;
+        } else {
+          block.pos = vlerp(0.5, block.pos, block.targetPos);
+        }
 
         let {x, y} = block.pos;
 
         let {parent} = block;
-        if (parent && parent.pos) {
+        if (parent && parent.pos && parent.height >= i0) {
           strokeWeight(1);
           stroke(255);
           line(x, y, parent.pos.x, parent.pos.y);
@@ -261,17 +280,16 @@ class Graph {
     for (let vk of vks) {
       var {kind, props} = this.vertices[vk];
       var vp = this.vertices[vk].props;
-      if (!vp.tip) { vp.tip = BlockRegistry.genesis(); }
-
+      if (!vp.tip) vp.tip = BlockRegistry.genesis();
       if (!vp.inbox) vp.inbox = [];
       if (!vp.outbox) vp.outbox = [];
-
+      if (!vp.peers) vp.peers = {};
 
       function isLongerChain(tip, b1) {
         return !tip || b1.height > tip.height;
       }
 
-      let {inbox, outbox} = vp;
+      let {inbox, outbox, peers, joined} = vp;
       let edges = this.getEdges(vk);
 
       function send(vk1, message) {
@@ -282,11 +300,16 @@ class Graph {
         return true;
       }
 
-      function broadcast(message) {
+      function broadcastBlock(block) {
         for (let vk1 in edges) {
-          if (edges.hasOwnProperty(vk1)) {
-            send(vk1, message);
-          }
+          if (!edges.hasOwnProperty(vk1)) continue;
+
+          if (!peers[vk1]) peers[vk1] = {};
+          if (peers[vk1].tip instanceof Block
+            && !isLongerChain(peers[vk1].tip, block)) continue;
+
+          peers[vk1].tip = block;
+          send(vk1, {block});
         }
       }
 
@@ -295,20 +318,33 @@ class Graph {
         vp.tip = block;
       }
 
-      var received = null;
+      var received = null, receivedJoined;
       if (inbox.length) {
         received = inbox.filter(({message}) => message.block && message.block instanceof Block && isLongerChain(vp.tip, message.block));
+        receivedJoined = inbox.filter(({message}) => message.joined);
       }
 
       if (received) {
         var sender = null;
         //console.log(vk, 'received', received);
 
+        var shouldBroadcast = false;
         var bestHeight = 0;
         var best = null;
         for (let item of received) {
-          let {sender, message: {block}} = item;
+          let {from, message: {block}} = item;
           let {height} = block;
+          if (!peers[from]) peers[from] = {};
+
+          if (peers[from].tip instanceof Block) {
+            if (isLongerChain(peers[from].tip, block)) {
+              peers[from].tip = block;
+            }
+          } else {
+            shouldBroadcast = true;
+            peers[from].tip = block;
+          }
+
           if (height > bestHeight) {
             bestHeight = height;
             best = item;
@@ -317,14 +353,30 @@ class Graph {
 
         if (best) {
           updateTip(best.message.block);
-          broadcast({ block: vp.tip });
+          broadcastBlock(vp.tip);
+        } else if (shouldBroadcast) {
+          // broadcast to peers with lower block
+          broadcastBlock(vp.tip);
         }
       }
 
-      // TODO broadcast new node entry message
+      if (receivedJoined) {
+        broadcastBlock(vp.tip);
+      }
+
+      // new entry
+      if (!joined) {
+        for (let vk1 in edges) {
+          if (!edges.hasOwnProperty(vk1)) continue;
+          send(vk1, {joined: true});
+        }
+
+        vp.joined = true;
+      }
+
       if (this.time % 10000 === Math.floor(1000 * Math.random()) && vp.tip) {
         //console.log(vk, 'periodic broadcast', tip);
-        broadcast(vp.tip);
+        broadcastBlock(vp.tip);
       }
 
       if (kind === 'miner') {
@@ -339,7 +391,7 @@ class Graph {
           BlockRegistry.add(mined);
           console.log(vk, 'mined block', mined, this.time);
           updateTip(mined);
-          broadcast({ block: mined });
+          broadcastBlock(mined);
         }
       }
 
@@ -410,17 +462,21 @@ class Graph {
       let h = v.props && v.props.tip ? v.props.tip.height : 0;
       if (!v.props.opacity) v.props.opacity = 30;
       let {opacity} = v.props;
-      let opa1 = minH === maxH ? 255 : 155 + Math.floor(100 * (h - minH) / (maxH - minH));
+      let opa1 = minH === maxH ? 255 : 105 + Math.floor(150 * (h - minH) / (maxH - minH));
       let opa = Math.floor(opacity + (opa1 < opacity ? 0.3 : 0.15) * (opa1 - opacity));
       if (opa > 253) opa = 255;
       v.props.opacity = opa;
 
       strokeWeight(3);
+      stroke(0, 0, 0, 100);
+      fill(0, 0, 0, 100);
+      ellipse(v.pos.x, v.pos.y, 2 * radius, 2 * radius);
+
       if (v && v.props && v.props.tip) {
         let [r, g, b] = v.props.tip.colorCode;
-        stroke(r, g, b);
+        stroke(r, g, b, opa);
       } else {
-        stroke(0);
+        stroke(0, 0, 0, opa);
       }
 
       if (v.kind === 'miner') {
@@ -568,6 +624,12 @@ class Graph {
       forces[vk].add(vel.mult(-cD));
     }
 
+    // noise
+    for (let vk of vks) {
+      let vel = vs[vk].vel.copy();
+      forces[vk].add(1e-6 * (Math.random() - 0.5), 1e-6 * (Math.random() - 0.5));
+    }
+
     for (let vk of vks) {
       let v = vs[vk];
       let f = forces[vk];
@@ -588,9 +650,12 @@ var doLayout = true;
 var layoutIters = 0;
 var connectRadius = 200;
 var kind = 'node';
+var nPeers = 8;
+var spreadFactor = 0.3;
+var timelineMode = true;
 
 function setup() {
-  createCanvas(1600, 1000);
+  createCanvas(1800, 1200);
   frameRate(targetFrameRate);
 
   for (var i = 0; i < 80; i++) {
@@ -630,7 +695,19 @@ function draw() {
   noFill();
   ellipse(mouseX, mouseY, 2 * connectRadius, 2 * connectRadius);
 
-  BlockRegistry.draw();
+  stroke(255, 255, 255, 50);
+  ellipse(mouseX, mouseY, 2 * spreadFactor * connectRadius, 2 * spreadFactor * connectRadius);
+
+  for (var i = 0; i < nPeers; i++) {
+    line(
+      mouseX,
+      mouseY,
+      mouseX + connectRadius * Math.cos(2 * Math.PI * i / nPeers),
+      mouseY + connectRadius * Math.sin(2 * Math.PI * i / nPeers)
+    );
+  }
+
+  BlockRegistry.draw(timelineMode ? 'time' : 'height');
 }
 
 function mousePos() { return createVector(mouseX, mouseY); }
@@ -657,23 +734,37 @@ function addConnectedNode(pos, n, c, radius = 10000, kind = 'node') {
 }
 
 function mousePressed() {
-  addConnectedNode(mousePos(), kind === 'miner' ? 3 : Math.floor(3 + Math.random() * 6), 0.1, connectRadius, kind);
+  if (touches && touches.length > 1) return;
+  addConnectedNode(mousePos(), nPeers, spreadFactor, connectRadius, kind);
 }
 
 function keyPressed() {
+  console.log(key, keyCode);
   let keyHandlers = {
     'M': () => { kind = kind === 'miner' ? 'node' : 'miner'; },
-    'C': () => { graph = new Graph(); },
+    'C': () => { graph = new Graph(); counter = 0; BlockRegistry.reset(); },
     'L': () => { doLayout = !doLayout; },
     'R': () => { layoutIters = 0; },
     'S': () => { layoutIters *= 2; },
-    '~': () => { connectRadius = 50; },
+    'T': () => { timelineMode = !timelineMode; },
+    [192]: () => { connectRadius = 50; },
     '1': () => { connectRadius = 100; },
     '2': () => { connectRadius = 200; },
     '3': () => { connectRadius = 300; },
     '4': () => { connectRadius = 400; },
-    '5': () => { connectRadius = 500; }
+    '5': () => { connectRadius = 500; },
+    '6': () => { connectRadius = 600; },
+    '7': () => { connectRadius = 700; },
+    '8': () => { connectRadius = 800; },
+    '9': () => { connectRadius = 900; },
+    '0': () => { connectRadius = 50; },
+    [189]: () => { nPeers = Math.max(1, nPeers - 1); },
+    [187]: () => { nPeers = Math.min(50, nPeers + 1); },
+    // [ ]
+    [219]: () => { spreadFactor = Math.max(0, spreadFactor - 0.05); },
+    [221]: () => { spreadFactor = Math.min(1, spreadFactor + 0.05); },
   };
-  if (key in keyHandlers) { keyHandlers[key](); }
+  if (key in keyHandlers) { return keyHandlers[key](); }
+  if (keyCode in keyHandlers) { return keyHandlers[keyCode](); }
 }
 
