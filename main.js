@@ -1,3 +1,9 @@
+let targetFrameRate = 15;
+let updatesPerFrame = 1;
+let ticksPerSecond = targetFrameRate * updatesPerFrame;
+let second = ticksPerSecond;
+let dTime = 1.0 / ticksPerSecond;
+
 class Block {
   constructor(params) {
     let {miner, height, parent, time, fork} = params || {};
@@ -9,6 +15,22 @@ class Block {
     if (parent && !(parent instanceof Block)) {
       console.error("parent is not a block", parent);
     }
+  }
+
+  get colorCode() {
+    let colorCodes = [
+      [0, 2, 2],
+      [1, 0, 0],
+      [2, 2, 0],
+      [0, 0, 1],
+      [2, 0, 2],
+      [0, 1, 0]
+    ];
+    let cA = 100, cB = 77;
+
+    let f = this.fork || 0;
+    let col = colorCodes[f % colorCodes.length];
+    return [cA + cB * col[0], cA + cB * col[1], cA + cB * col[2]];
   }
 
   nthParent(n) {
@@ -56,12 +78,22 @@ class BlockRegistry {
     if (!(block instanceof Block)) return;
     let {blocks} = BlockRegistry;
     if (!blocks[block.height]) blocks[block.height] = [];
+    block.fork = blocks[block.height].length;
     blocks[block.height].push(block);
   }
 
-  static getNextForkId(h) {
+  static getNextForkId(block) {
     BlockRegistry.ensureInit();
-    return BlockRegistry.blocks[h] ? BlockRegistry.blocks[h].length : 0;
+    let {blocks} = BlockRegistry;
+    let {height: h} = block;
+    return blocks[h] ? blocks[h].length : 0;
+  }
+
+  static *allBlocks() {
+    BlockRegistry.ensureInit();
+    for (let bs of BlockRegistry.blocks) {
+      for (let block of bs) yield block;
+    }
   }
 
   static draw() {
@@ -70,8 +102,19 @@ class BlockRegistry {
 
     let i0 = Math.max(0, blocks.length - 30);
     let nForks = blocks.reduce(Math.max, 1);
-    function getPos(i, j) {
-      return createVector(20 + (i - i0) * 40, height - 20 - j * 20);
+
+    let allBlocks = Array.from(BlockRegistry.allBlocks()).filter(({height}) => height >= i0);
+    let minTime = allBlocks.reduce(((mtime, {time}) => Math.min(mtime, time)), 0);
+    let maxTime = allBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), 0);
+    //console.log(minTime, maxTime);
+
+    let totalWidth = Math.min(width - 100, 10 * maxTime / ticksPerSecond);
+
+    function getPos(i, j, {time, fork}) {
+      let j1 = fork || j;
+      let dx = (totalWidth * (1.0 * (time - minTime))) / (1.0 * (maxTime - minTime));
+      return createVector(50 + Math.max(0, dx), height - 20 - j1 * 20);
+      //return createVector(20 + (i - i0) * 40, height - 20 - j1 * 20);
     };
 
     for (var i = i0; i < blocks.length; i++) {
@@ -79,24 +122,22 @@ class BlockRegistry {
 
       for (var j = 0; j < blocks[i].length; j++) {
         let block = blocks[i][j];
-        var pos = block.pos;
-        if (!pos) {
-          block.pos = pos = getPos(i, j);
-        }
+        block.pos = getPos(i, j, block);
 
-        let {x, y} = pos;
-
-        rectMode(CENTER);
-        fill(255);
-        noStroke();
-        rect(x, y, 10, 10);
+        let {x, y} = block.pos;
 
         let {parent} = block;
-        if (!parent || !parent.pos) continue;
+        if (parent && parent.pos) {
+          strokeWeight(1);
+          stroke(255);
+          line(x, y, parent.pos.x, parent.pos.y);
+        }
 
-        strokeWeight(1);
-        stroke(255);
-        line(x, y, parent.pos.x, parent.pos.y);
+        rectMode(CENTER);
+        noStroke();
+        let [r, g, b] = block.colorCode;
+        fill(r, g, b);
+        rect(x, y, 4, 10);
       }
     }
   }
@@ -131,13 +172,13 @@ class Edge {
 }
 
 class Graph {
-  constructor() {
+  constructor(props) {
     this.vertices = {};
     this.adj = {};
     this.radj = {};
     this.radius = 15;
     this.time = 0;
-    this.edgeDelay = 100;
+    this.props = props || {};
   }
 
   draw() {
@@ -197,10 +238,24 @@ class Graph {
 
   updateNodes() {
     let vks = this.getVertexKeys();
+
+    let {
+      edgeDelay = 1,
+      blockTime = 5,
+      defaultHashrate = 1
+    } = this.props;
+
     let nMiners = 0;
+    let totalHashrate = 0;
+
     for (let vk of vks) {
-      if (this.vertices[vk].props.kind === 'miner')
+      let {kind, props} = this.vertices[vk];
+      if (kind === 'miner') {
+        let {hashrate} = props;
+        if (!hashrate) props.hashrate = defaultHashrate;
+        totalHashrate += props.hashrate;
         nMiners++;
+      }
     }
 
     for (let vk of vks) {
@@ -242,7 +297,7 @@ class Graph {
 
       var received = null;
       if (inbox.length) {
-        received = inbox.filter(({message}) => message instanceof Block && isLongerChain(vp.tip, message));
+        received = inbox.filter(({message}) => message.block && message.block instanceof Block && isLongerChain(vp.tip, message.block));
       }
 
       if (received) {
@@ -252,8 +307,8 @@ class Graph {
         var bestHeight = 0;
         var best = null;
         for (let item of received) {
-          let {sender, message} = item;
-          let {height} = message;
+          let {sender, message: {block}} = item;
+          let {height} = block;
           if (height > bestHeight) {
             bestHeight = height;
             best = item;
@@ -261,8 +316,8 @@ class Graph {
         }
 
         if (best) {
-          updateTip(best.message);
-          broadcast(vp.tip);
+          updateTip(best.message.block);
+          broadcast({ block: vp.tip });
         }
       }
 
@@ -273,20 +328,24 @@ class Graph {
       }
 
       if (kind === 'miner') {
-        let {hashrate: lambda = 2e-5} = props;
-        if (Math.random() < lambda / (0.1 + nMiners)) {
-          let mined = new Block({parent: vp.tip, miner: vk, time: this.time, fork: BlockRegistry.getNextForkId(vp.tip.height)});
+        // simulate mining probability based on network hashrate and block time
+        let {hashrate} = props;
+        let lambdaPerBlockTime = hashrate / totalHashrate;
+        let lambdaPerSecond = lambdaPerBlockTime / blockTime;
+        let lambdaPerTick = lambdaPerSecond / ticksPerSecond;
+
+        if (Math.random() <= lambdaPerTick) {
+          let mined = new Block({parent: vp.tip, miner: vk, time: this.time});
           BlockRegistry.add(mined);
           console.log(vk, 'mined block', mined, this.time);
           updateTip(mined);
-          broadcast(mined);
+          broadcast({ block: mined });
         }
       }
 
       while (vp.inbox.pop());
 
       //if (outbox.length) console.log(vk, 'outbox', Array.from(outbox));
-      let {edgeDelay} = this;
       while (outbox) {
         let out = outbox.pop();
         if (!out) break;
@@ -296,7 +355,8 @@ class Graph {
         if (!edge.props.transit) edge.props.transit = {items: []};
         let {transit} = edge.props;
         let {items} = transit;
-        items.push({initTime: edgeDelay, timeLeft: edgeDelay, from: vk, to: target, message});
+        let edgeDelayTicks = Math.floor(edgeDelay * ticksPerSecond);
+        items.push({initTime: edgeDelayTicks, timeLeft: edgeDelayTicks, from: vk, to: target, message});
       }
     }
 
@@ -329,6 +389,7 @@ class Graph {
   }
 
   drawVertices() {
+
     noStroke();
     ellipseMode(CENTER);
 
@@ -354,13 +415,18 @@ class Graph {
       if (opa > 253) opa = 255;
       v.props.opacity = opa;
 
-      strokeWeight(2);
-      let f = (v && v.props && v.props.tip ? v.props.tip.fork : 0);
-      stroke(128 + 128 * (f % 3 == 0), 128 + 128 * (f % 4 == 1), 128 + 128 * (f % 5 == 2));
-      if (v.kind === 'miner') {
-        fill(255, 80, 80, opa);
+      strokeWeight(3);
+      if (v && v.props && v.props.tip) {
+        let [r, g, b] = v.props.tip.colorCode;
+        stroke(r, g, b);
       } else {
-        fill(255, 255, 255, opa);
+        stroke(0);
+      }
+
+      if (v.kind === 'miner') {
+        fill(255, 140, 140, opa);
+      } else {
+        fill(220, 220, 220, opa);
       }
 
       ellipse(v.pos.x, v.pos.y, 2 * radius, 2 * radius);
@@ -369,7 +435,7 @@ class Graph {
       noStroke();
       textAlign(CENTER);
       textSize(10);
-      text(`${vk}\n${h}`, Math.round(v.pos.x), Math.round(v.pos.y));
+      text(`${vk}\n${h}`, Math.round(v.pos.x), Math.round(v.pos.y) - 1);
     }
 
   }
@@ -525,7 +591,7 @@ var kind = 'node';
 
 function setup() {
   createCanvas(1600, 1000);
-  frameRate(60);
+  frameRate(targetFrameRate);
 
   for (var i = 0; i < 80; i++) {
     addConnectedNode(createVector(
@@ -544,8 +610,8 @@ function setup() {
 
 function draw() {
   background(0);
-  graph.update();
-  graph.draw();
+
+  for (var i = 0; i < updatesPerFrame; i++) graph.update();
 
   let exp1 = (x) => x > 1 ? Math.exp(-(x - 1)) : 1;
 
@@ -555,6 +621,8 @@ function draw() {
       layoutIters++;
     }
   }
+
+  graph.draw();
 
   strokeWeight(0.5);
   stroke(255, 255, 255, 100);
@@ -608,3 +676,4 @@ function keyPressed() {
   };
   if (key in keyHandlers) { keyHandlers[key](); }
 }
+
