@@ -12,7 +12,7 @@ function vlerp(t, v1, v2) {
 
 class Block {
   constructor(params) {
-    let {miner, height, parent, time, fork} = params || {};
+    let {miner, height, parent, time, fork, props} = params || {};
     this.miner = miner || '';
     this.height = height || (parent && 1 + parent.height) || 0;
     this.parent = parent || null;
@@ -21,6 +21,8 @@ class Block {
     if (parent && !(parent instanceof Block)) {
       console.error("parent is not a block", parent);
     }
+
+    this.props = typeof props === 'object' ? props : { nodes: {} };
   }
 
   get colorCode() {
@@ -57,10 +59,37 @@ class Block {
     }
   }
 
+  parentOfHeight(h) {
+    let {height} = this;
+    if (h == height) return this;
+    if (h > height) return null;
+
+    var b = this.parent;
+    while (b) {
+      if (b.height == h) return b;
+      b = b.parent;
+    }
+    return null;
+  }
+
   commonAncestor(b1) {
     while (true) {
       n = 10;
     }
+  }
+
+  registerTip(vk) {
+    let {props: {nodes}} = this;
+
+    if (!nodes.hasOwnProperty(vk)) nodes[vk] = 0;
+    nodes[vk]++;
+  }
+
+  unregisterTip(vk) {
+    let {props: {nodes}} = this;
+
+    nodes[vk]--;
+    if (!nodes[vk]) delete nodes[vk];
   }
 }
 
@@ -108,16 +137,16 @@ class BlockRegistry {
     let {blocks} = BlockRegistry;
     if (!blocks || !blocks.length || !blocks[0].length) return;
 
-    let nForks = blocks.reduce(Math.max, 1);
-
     let blockWidth = 30;
     let margin = 20;
     let maxWidth = width - 2 * margin;
-    let i0 = Math.max(0, blocks.length - Math.ceil(maxWidth / blockWidth));
-    let allBlocks = Array.from(BlockRegistry.allBlocks()).filter(({height}) => height >= i0);
-    let minTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.min(mtime, time)), blocks[0][0].time) : 0;
+    let minHeight = Math.max(0, blocks.length - 60);
+
+    let lowestBlocks = blocks[minHeight], highestBlocks = blocks[blocks.length - 1];
+
+    let minTime = mode === 'time' ? lowestBlocks.reduce(((mtime, {time}) => Math.min(mtime, time)), lowestBlocks[0].time) : 0;
     if (!maxTime)
-      maxTime = mode === 'time' ? allBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), blocks[0][0].time) : 0;
+      maxTime = mode === 'time' ? highestBlocks.reduce(((mtime, {time}) => Math.max(mtime, time)), highestBlocks[0].time) : 0;
     //console.log(minTime, maxTime);
 
     let totalWidthT = Math.min(width - 2 * margin, 10 * maxTime / ticksPerSecond);
@@ -133,29 +162,31 @@ class BlockRegistry {
         return createVector(margin + dx, height - 20 - j1 * 20);
       }
 
-      return createVector(margin + (i - i0) * blockWidth, height - 20 - j1 * 20);
+      return createVector(margin + (i - minHeight) * blockWidth, height - 20 - j1 * 20);
     };
 
-    for (var i = i0; i < blocks.length; i++) {
+    for (var i = minHeight; i < blocks.length; i++) {
       if (!blocks[i]) continue;
 
       for (var j = 0; j < blocks[i].length; j++) {
         let block = blocks[i][j];
-        block.targetPos = getPos(i, j, block);
+        let {props} = block;
+        let targetPos = props.targetPos = getPos(i, j, block);
 
-        if (!block.pos) {
-          block.pos = block.targetPos;
+        if (!props.pos) {
+          props.pos = targetPos;
         } else {
-          block.pos = vlerp(0.5, block.pos, block.targetPos);
+          props.pos = vlerp(0.5, props.pos, targetPos);
         }
 
-        let {x, y} = block.pos;
+        let {x, y} = props.pos || createVector();
 
         let {parent} = block;
-        if (parent && parent.pos && parent.height >= i0) {
+        if (parent && parent.props.pos && parent.height >= minHeight) {
+          let {props: {pos: parentPos}} = parent;
           strokeWeight(1);
           stroke(255);
-          line(x, y, parent.pos.x, parent.pos.y);
+          line(x, y, parentPos.x, parentPos.y);
         }
 
         rectMode(CENTER);
@@ -180,19 +211,6 @@ class BlockRegistry {
       }
     }
   }
-}
-
-if (false) {
-  let b0 = new Block();
-  let b1 = new Block({ parent: b0 });
-  let b2 = new Block({ parent: b1 });
-  let b3 = new Block({ parent: b2 });
-  let b4a = new Block({ label: 'a', parent: b3 });
-  let b4b = new Block({ label: 'b', parent: b3 });
-  let b5a = new Block({ label: 'aa', parent: b4a });
-  console.log(b5a);
-  console.log(b4b);
-  console.log(Array.from(b5a.parents()));
 }
 
 class Vertex {
@@ -222,6 +240,7 @@ class Graph {
       blockTime: 5,
       defaultHashrate: 1
     };
+    this.memo = {};
   }
 
   draw() {
@@ -335,7 +354,9 @@ class Graph {
 
       function updateTip(block) {
         //console.log(vk, "update tip:", {from: tip, to: block});
+        vp.tip.unregisterTip(vk);
         vp.tip = block;
+        vp.tip.registerTip(vk);
       }
 
       var received = null, receivedJoined;
@@ -434,10 +455,15 @@ class Graph {
 
   }
 
+  invalidate() {
+    this.memo = {};
+  }
+
   addVertex(vk, params) {
     if (this.vertices.hasOwnProperty(vk)) return false;
 
     this.vertices[vk] = new Vertex(params);
+    this.invalidate();
     return true;
   }
 
@@ -452,6 +478,7 @@ class Graph {
     this.adj[vka][vkb] = new Edge(params);
     this.radj[vkb][vka] = true;
 
+    this.invalidate();
     return true;
   }
 
@@ -461,7 +488,6 @@ class Graph {
   }
 
   drawVertices() {
-
     noStroke();
     ellipseMode(CENTER);
 
@@ -564,6 +590,13 @@ class Graph {
   }
 
   getEdges(vk) {
+    let {memo} = this;
+    if (!memo.getEdges) memo.getEdges = {};
+
+    if (memo.getEdges.hasOwnProperty(vk)) {
+      return memo.getEdges[vk];
+    }
+
     var edges = {};
     let {adj, radj} = this;
     for (var vk1 in adj[vk]) {
@@ -577,6 +610,8 @@ class Graph {
         edges[vk1] = adj[vk1][vk];
       }
     }
+
+    memo.getEdges[vk] = {...edges};
 
     return edges;
   }
@@ -597,15 +632,29 @@ class Graph {
     let vks = this.getVertexKeys();
     let {vertices: vs, adj} = this;
 
-    const cf = (a, pow, pos0, pos1, dmax) => {
-      let p = pos1.copy().sub(pos0);
-      let r = p.mag();
-      if (r > dmax) return createVector();
-      p.normalize();
-      let val = a * (pow === 0 ? r : pow === 1 ? r : Math.pow(r, pow));
-      p.mult(Number.isFinite(val) ? val : 0);
-      p.limit(1e4);
-      return p;
+    function cf(a, pow, {x: x0, y: y0, z: z0}, {x: x1, y: y1, z: z1}, dmax) {
+      let dx = x1 - x0;
+      let dy = y1 - y0;
+      let dz = z1 - z0;
+      let r2 = dx * dx + dy * dy + dz * dz;
+      if (r2 >= dmax * dmax || !Number.isFinite(r2)) return createVector();
+
+      let r = Math.sqrt(r2);
+      if (!Number.isFinite(r)) return createVector();
+
+      if (pow === 1) {
+        return createVector(a * dx, a * dy, a * dz).limit(1e4);
+      } else if (pow === 0) {
+        return createVector(a * dx / r, a * dy / r, a * dz / r).limit(1e4);
+      } else if (pow === -1) {
+        return createVector(a * dx / r2, a * dy / r2, a * dz / r2).limit(1e4);
+      } else if (pow === -2) {
+        let r3 = r * r2;
+        return createVector(a * dx / r3, a * dy / r3, a * dz / r3).limit(1e4);
+      } else {
+        let rp = r * Math.pow(r, pow);
+        return createVector(a * dx / rp, a * dy / rp, a * dz / rp).limit(1e4);
+      }
     }
 
     let centroid = createVector();
@@ -617,7 +666,7 @@ class Graph {
     if (vks.length)
       centroid.div(vks.length);
 
-    let centerForce = cf(cS, 1, centroid, center, 1e8);
+    let centerForce = cf(cS, 1, centroid, center, 1e8).limit(30);
     for (let vk of vks) {
       forces[vk].add(centerForce);
     }
@@ -625,14 +674,14 @@ class Graph {
     // repel
     for (let vk1 of vks) {
       for (let vk2 of vks) {
-        forces[vk1].add(cf(-cR, -2, vs[vk1].pos, vs[vk2].pos, range).limit(100));
+        forces[vk1].add(cf(-cR, -2, vs[vk1].pos, vs[vk2].pos, range).limit(40));
       }
     }
 
     // attract
     for (let vk1 in adj) {
       for (let vk2 in adj[vk1]) {
-        let fa = cf(cA, 1, vs[vk1].pos, vs[vk2].pos, 1e8);
+        let fa = cf(cA, 1, vs[vk1].pos, vs[vk2].pos, 1e8).limit(100);
         forces[vk1].add(fa);
         forces[vk2].add(fa.mult(-1));
       }
@@ -677,6 +726,8 @@ var timelineMode = true;
 var keyHandlers;
 let controls = {};
 
+let opts = { speedup: 1 };
+
 function setup() {
   createCanvas(1800, 1200).parent('main-canvas');
   frameRate(targetFrameRate);
@@ -696,9 +747,12 @@ function setup() {
   }
 
   let controlsDecl = {
+    simulation: [
+      { obj: () => opts, key: 'speedup', create: () => createSlider(1, 60, 1) },
+    ],
     blockchain: [
-      { obj: () => graph.props, key: 'blockTime', label: '', create: () => createSlider(1, 60, 0.5) },
-      { obj: () => graph.props, key: 'edgeDelay', label: '', create: () => createSlider(1, 10, 0.1) }
+      { obj: () => graph.props, key: 'blockTime', create: () => createSlider(1.0, 60.0, 0.5) },
+      { obj: () => graph.props, key: 'edgeDelay', create: () => createSlider(0.1, 20.0, 0.0, 0.1) }
     ]
   };
 
@@ -743,13 +797,12 @@ function draw() {
     }
   }
 
-  for (var i = 0; i < updatesPerFrame; i++) graph.update();
+  let nUpdates = updatesPerFrame * opts.speedup;
+  for (var i = 0; i < nUpdates; i++) graph.update();
 
   if (doLayout) {
-    for (var i = 0; i < 2; i++) {
-      graph.forceLayout({ range: 100 });
-      layoutIters++;
-    }
+    graph.forceLayout({ range: 100 /* , dt: 2 * 1.0 / ticksPerSecond */ });
+    layoutIters++;
   }
 
   graph.draw();
@@ -782,9 +835,10 @@ function draw() {
   let blockHeight = BlockRegistry.blocks.length - 1;
   let totalBlocks = BlockRegistry.blocks.reduce((s, {length}) => s + length, 0);
   let orphanRate = 1 - (1.0 * (1 + blockHeight)) / totalBlocks;
-  let statusText = (
-    `Block time: ${graph.props.blockTime} s\n`
-    + `Propagation delay: ${graph.props.edgeDelay} s\n`
+  let statusText = ( ''
+    + `Speedup: ${opts.speedup}x;  ${Math.round(getFrameRate())} fps\n`
+    + `Block time: ${graph.props.blockTime} s\n`
+    + `Propagation time: ${graph.props.edgeDelay} s\n`
     + `Block height: ${blockHeight}, Total blocks: ${totalBlocks}\n`
     + `Orphan rate: ${(orphanRate * 100).toFixed(2)} %`
   );
@@ -818,7 +872,9 @@ function mousePressed() {
   if (touches && touches.length > 1) return;
   if (mouseX < 0 || mouseX > width || mouseY < 0 || mouseY > height) return;
 
-  addConnectedNode(mousePos(), nPeers, spreadFactor, connectRadius, kind);
+  addConnectedNode(
+    mousePos().add(createVector(Math.random() - 0.5, Math.random() - 0.5)),
+    nPeers, spreadFactor, connectRadius, kind);
 }
 
 keyHandlers = {

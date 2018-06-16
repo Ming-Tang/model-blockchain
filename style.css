@@ -32,6 +32,10 @@ html, body, #root {
   grid-area: c;
 }
 
+#instructions, #controls {
+  padding: 20px;
+}
+
 #main-canvas canvas {
   margin: 0;
   padding: 0;
@@ -40,3 +44,6 @@ html, body, #root {
 
 #buttons { display: flex; }
 
+span > input {
+  width: 100%;
+}
