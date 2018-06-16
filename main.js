@@ -159,10 +159,10 @@ class BlockRegistry {
       let j1 = fork || j;
       if (mode === 'time') {
         let dx = dxTime(time);
-        return createVector(margin + dx, height - 20 - j1 * 20);
+        return createVector(margin + dx, height - 20 - j1 * 25);
       }
 
-      return createVector(margin + (i - minHeight) * blockWidth, height - 20 - j1 * 20);
+      return createVector(margin + (i - minHeight) * blockWidth, height - 20 - j1 * 25);
     };
 
     for (var i = minHeight; i < blocks.length; i++) {
@@ -194,6 +194,23 @@ class BlockRegistry {
         let [r, g, b] = block.colorCode;
         fill(r, g, b);
         rect(x, y, 4, 10);
+
+        if (props.nodes) {
+          let {nodes} = props;
+          var s = 0;
+          for (var k in nodes) {
+            if (!nodes.hasOwnProperty(k)) continue;
+            s += nodes[k];
+          }
+
+          if (s) {
+            fill(255);
+            noStroke();
+            textSize(11);
+            textAlign(CENTER);
+            text(`${s}`, x + 4, y - 6);
+          }
+        }
       }
     }
 
@@ -308,6 +325,11 @@ class Graph {
 
     for (let vk of vks) {
       let {kind, props} = this.vertices[vk];
+      if (!props.tip) {
+        props.tip = BlockRegistry.genesis();
+        props.tip.registerTip(vk);
+      }
+
       if (kind === 'miner') {
         let {hashrate} = props;
         if (!hashrate) props.hashrate = defaultHashrate;
@@ -319,7 +341,7 @@ class Graph {
     for (let vk of vks) {
       var {kind, props} = this.vertices[vk];
       var vp = this.vertices[vk].props;
-      if (!vp.tip) vp.tip = BlockRegistry.genesis();
+
       if (!vp.inbox) vp.inbox = [];
       if (!vp.outbox) vp.outbox = [];
       if (!vp.peers) vp.peers = {};
