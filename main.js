@@ -541,7 +541,8 @@ class Graph {
       if (kind === 'miner') {
         let {hashrate, poissonMining} = vp;
 
-        let difficulty = vp.tip.difficulty; //totalHashrate;
+        // use total hashrate as initial difficulty
+        let difficulty = vp.tip.height === 0 ? Math.floor(totalHashrate) : vp.tip.difficulty;
         let blockTimeTicks = blockTime * ticksPerSecond;
         let probPerBlock = hashrate / difficulty;
         let lambdaPerTick = probPerBlock / blockTimeTicks;
