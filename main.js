@@ -12,12 +12,14 @@ function vlerp(t, v1, v2) {
 
 class Block {
   constructor(params) {
-    let {miner, height, parent, time, fork, props} = params || {};
+    let {miner, height, parent, time, fork, props, difficulty} = params || {};
     this.miner = miner || '';
     this.height = height || (parent && 1 + parent.height) || 0;
     this.parent = parent || null;
     this.fork = fork || 0;
     this.time = time || 0;
+    this.difficulty = Math.floor(Math.max(difficulty, 1) || 10);
+    this.totalWork = (parent ? parent.totalWork : 0) + this.difficulty;
     if (parent && !(parent instanceof Block)) {
       console.error("parent is not a block", parent);
     }
@@ -73,9 +75,27 @@ class Block {
   }
 
   commonAncestor(b1) {
-    while (true) {
-      n = 10;
+    var ba, bb;
+    let b2 = this;
+    if (b1.height > b2.height) {
+      ba = b1.parentOfHeight(b2.height);
+      bb = b2;
+    } else {
+      ba = b2.parentOfHeight(b1.height);
+      bb = b1;
     }
+
+    while (true) {
+      if (ba === bb) return ba;
+      ba = ba.parent;
+      bb = bb.parent;
+
+      if (!ba.parent != !bb.parent || ba.height !== bb.height) {
+        throw new Error('commonAncestor: bad heights.');
+      }
+    }
+
+    return ba;
   }
 
   registerTip(vk) {
@@ -90,6 +110,14 @@ class Block {
 
     nodes[vk]--;
     if (!nodes[vk]) delete nodes[vk];
+  }
+
+  actualBlockTime(n) {
+    let {time = 0, height = 0} = this;
+    let tf = time;
+    let bi = this.parentOfHeight(height - n);
+    let ti = bi ? bi.time || 0 : 0;
+    return Math.round((tf - ti) / n);
   }
 }
 
@@ -245,6 +273,41 @@ class Edge {
   }
 }
 
+/**
+ * Schedules events that follows Poisson process.
+ *
+ * Can also be done by performing a Bernouli trial at every simulation tick,
+ * but there is suspected precision problem for small lambda.
+ */
+class PoissonProcess {
+  static Qexp(p, lambda) {
+    return -Math.log(1 - p) / lambda;
+  }
+
+  constructor(lambda) {
+    this.nextEvent = null;
+    this.lambda = lambda || 1;
+  }
+
+  updateNextEvent(time) {
+    let p = Math.random();
+    let {lambda} = this;
+    this.nextEvent = time + PoissonProcess.Qexp(p, lambda);
+  }
+
+  update(time, lambda) {
+    let isFirst = this.nextEvent === null;
+    let lambdaChanged = lambda !== this.lambda && Math.abs((lambda - this.lambda) / this.lambda) >= 1e-2;
+    if (time >= this.nextEvent || lambdaChanged) {
+      this.lambda = lambda;
+      this.updateNextEvent(time);
+      return !isFirst && !lambdaChanged;
+    }
+
+    return false;
+  }
+}
+
 class Graph {
   constructor(props) {
     this.vertices = {};
@@ -324,16 +387,17 @@ class Graph {
     let totalHashrate = 0;
 
     for (let vk of vks) {
-      let {kind, props} = this.vertices[vk];
-      if (!props.tip) {
-        props.tip = BlockRegistry.genesis();
-        props.tip.registerTip(vk);
+      let {kind, props: vp} = this.vertices[vk];
+      if (!vp.tip) {
+        vp.tip = BlockRegistry.genesis();
+        vp.tip.registerTip(vk);
       }
 
       if (kind === 'miner') {
-        let {hashrate} = props;
-        if (!hashrate) props.hashrate = defaultHashrate;
-        totalHashrate += props.hashrate;
+        let {hashrate, poissonMining} = vp;
+        if (!hashrate) vp.hashrate = defaultHashrate;
+        if (!poissonMining) vp.poissonMining = new PoissonProcess();
+        totalHashrate += vp.hashrate;
         nMiners++;
       }
     }
@@ -347,7 +411,8 @@ class Graph {
       if (!vp.peers) vp.peers = {};
 
       function isLongerChain(tip, b1) {
-        return !tip || b1.height > tip.height;
+        //return !tip || b1.height > tip.height;
+        return !tip || b1.totalWork > tip.totalWork;
       }
 
       let {inbox, outbox, peers, joined} = vp;
@@ -375,22 +440,37 @@ class Graph {
       }
 
       function updateTip(block) {
+        if (!isLongerChain(vp.tip, block)) {
+          return {success: false, reason: 'height'};
+        }
+
         //console.log(vk, "update tip:", {from: tip, to: block});
+        let bCA = vp.tip.commonAncestor(block);
+        let advance = block.height - vp.tip.height;
+        var info = null;
+        if (bCA === vp.tip) {
+          info = {reorg: false, advance};
+          //console.log(vk, 'udpate tip: advance: ', { advance });
+        } else {
+          let depth = vp.tip.height - bCA.height;
+          let {maxReorgDepth = Infinity} = vp;
+          if (depth > maxReorgDepth) {
+            console.log(vk, 'udpate tip: reorg: refused', { advance, depth });
+            return {success: false, reason: 'depth'};
+          }
+
+          //console.log(vk, 'udpate tip: reorg:', { advance, depth });
+          info = {reorg: true, advance, depth};
+        }
+
         vp.tip.unregisterTip(vk);
         vp.tip = block;
         vp.tip.registerTip(vk);
+
+        return {success: true, info};
       }
 
-      var received = null, receivedJoined;
-      if (inbox.length) {
-        received = inbox.filter(({message}) => message.block && message.block instanceof Block && isLongerChain(vp.tip, message.block));
-        receivedJoined = inbox.filter(({message}) => message.joined);
-      }
-
-      if (received) {
-        var sender = null;
-        //console.log(vk, 'received', received);
-
+      function findBestFromReceivedBlocks(received) {
         var shouldBroadcast = false;
         var bestHeight = 0;
         var best = null;
@@ -413,21 +493,37 @@ class Graph {
             best = item;
           }
         }
+        return {shouldBroadcast, best};
+      }
+
+      // read messages
+      var received = null, receivedJoined;
+      if (inbox.length) {
+        received = inbox.filter(({message}) => message.block && isLongerChain(vp.tip, message.block));
+        receivedJoined = inbox.filter(({message}) => message.joined);
+      }
+
+      if (received) {
+        var sender = null;
+        //console.log(vk, 'received', received);
+
+        let {shouldBroadcast, best} = findBestFromReceivedBlocks(received);
 
         if (best) {
           updateTip(best.message.block);
-          broadcastBlock(vp.tip);
+          if (!vp.disableRelayBlock) broadcastBlock(vp.tip);
         } else if (shouldBroadcast) {
           // broadcast to peers with lower block
           broadcastBlock(vp.tip);
         }
       }
 
+      // reply to new nodes
       if (receivedJoined) {
         broadcastBlock(vp.tip);
       }
 
-      // new entry
+      // new node
       if (!joined) {
         for (let vk1 in edges) {
           if (!edges.hasOwnProperty(vk1)) continue;
@@ -443,18 +539,34 @@ class Graph {
       }
 
       if (kind === 'miner') {
-        // simulate mining probability based on network hashrate and block time
-        let {hashrate} = props;
-        let lambdaPerBlockTime = hashrate / totalHashrate;
-        let lambdaPerSecond = lambdaPerBlockTime / blockTime;
-        let lambdaPerTick = lambdaPerSecond / ticksPerSecond;
+        let {hashrate, poissonMining} = vp;
 
-        if (Math.random() <= lambdaPerTick) {
-          let mined = new Block({parent: vp.tip, miner: vk, time: this.time});
+        let difficulty = vp.tip.difficulty; //totalHashrate;
+        let blockTimeTicks = blockTime * ticksPerSecond;
+        let probPerBlock = hashrate / difficulty;
+        let lambdaPerTick = probPerBlock / blockTimeTicks;
+        if (poissonMining.update(this.time, lambdaPerTick)) {
+          let miningParent = vp.tip;
+          let retargetBlocks = 10;
+          let exponent = 1;
+          let actualBlockTimeTicks = miningParent.actualBlockTime(2 * retargetBlocks);
+          let ratio = blockTimeTicks / actualBlockTimeTicks;
+          let ratioE = Math.pow(ratio, exponent);
+          var newDifficulty = difficulty;
+
+          if (miningParent.height % retargetBlocks == retargetBlocks - 1) {
+            newDifficulty = difficulty * ratioE;
+          }
+
+          let mined = new Block({parent: miningParent, miner: vk, time: this.time, difficulty: newDifficulty});
+          vp.miningParent = null;
           BlockRegistry.add(mined);
           console.log(vk, 'mined block', mined, this.time);
-          updateTip(mined);
-          broadcastBlock(mined);
+
+          if (true || isLongerChain(mined, vp.tip)) {
+            updateTip(mined);
+            broadcastBlock(mined);
+          }
         }
       }
 
