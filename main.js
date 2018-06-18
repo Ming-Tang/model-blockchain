@@ -117,7 +117,7 @@ class Block {
     let tf = time;
     let bi = this.parentOfHeight(height - n);
     let ti = bi ? bi.time || 0 : 0;
-    return Math.round((tf - ti) / n);
+    return Math.round((tf - ti) / Math.min(n, height));
   }
 }
 
@@ -542,13 +542,13 @@ class Graph {
         let {hashrate, poissonMining} = vp;
 
         // use total hashrate as initial difficulty
-        let difficulty = vp.tip.height === 0 ? Math.floor(totalHashrate) : vp.tip.difficulty;
+        let difficulty = vp.tip.height === 0 ? Math.floor(totalHashrate * 1000) : vp.tip.difficulty;
         let blockTimeTicks = blockTime * ticksPerSecond;
-        let probPerBlock = hashrate / difficulty;
+        let probPerBlock = hashrate / (difficulty / 1000);
         let lambdaPerTick = probPerBlock / blockTimeTicks;
         if (poissonMining.update(this.time, lambdaPerTick)) {
           let miningParent = vp.tip;
-          let retargetBlocks = 10;
+          let retargetBlocks = 50;
           let exponent = 1;
           let actualBlockTimeTicks = miningParent.actualBlockTime(2 * retargetBlocks);
           let ratio = blockTimeTicks / actualBlockTimeTicks;
@@ -883,7 +883,7 @@ function setup() {
 
   let controlsDecl = {
     simulation: [
-      { obj: () => opts, key: 'speedup', create: () => createSlider(1, 60, 1) },
+      { obj: () => opts, key: 'speedup', create: () => createSlider(1, 200, 1) },
     ],
     blockchain: [
       { obj: () => graph.props, key: 'blockTime', create: () => createSlider(1.0, 60.0, 0.5) },
@@ -970,12 +970,20 @@ function draw() {
   let blockHeight = BlockRegistry.blocks.length - 1;
   let totalBlocks = BlockRegistry.blocks.reduce((s, {length}) => s + length, 0);
   let orphanRate = 1 - (1.0 * (1 + blockHeight)) / totalBlocks;
+  let tip = BlockRegistry.blocks && BlockRegistry.blocks[blockHeight] ? BlockRegistry.blocks[blockHeight][0] : null;
+
+  let bt50 = tip ? tip.actualBlockTime(50).toFixed(2) / ticksPerSecond : 0;
+  let bt200 = tip ? tip.actualBlockTime(200).toFixed(2) / ticksPerSecond : 0;
+  let bt1000 = tip ? tip.actualBlockTime(1000).toFixed(2) / ticksPerSecond : 0;
+
   let statusText = ( ''
     + `Speedup: ${opts.speedup}x;  ${Math.round(getFrameRate())} fps\n`
     + `Block time: ${graph.props.blockTime} s\n`
     + `Propagation time: ${graph.props.edgeDelay} s\n`
     + `Block height: ${blockHeight}, Total blocks: ${totalBlocks}\n`
-    + `Orphan rate: ${(orphanRate * 100).toFixed(2)} %`
+    + `Orphan rate: ${(orphanRate * 100).toFixed(2)} %\n\n`
+    + `Measured block time (50/200/1000): ${bt50} | ${bt200} | ${bt1000}\n`
+    + `Difficulty: ${tip ? tip.difficulty : 1}`
   );
   text(statusText, width - 10, 20);
 }
