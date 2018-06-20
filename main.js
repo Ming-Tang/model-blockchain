@@ -45,7 +45,8 @@ class Block {
 
   nthParent(n) {
     var b = this;
-    while (b && n) {
+    while (n) {
+      if (!b.parent) return b;
       b = b.parent;
       n--;
     }
@@ -209,7 +210,7 @@ class BlockRegistry {
 
         let {x, y} = props.pos || createVector();
 
-        let {parent} = block;
+        let {parent, miner} = block;
         if (parent && parent.props.pos && parent.height >= minHeight) {
           let {props: {pos: parentPos}} = parent;
           strokeWeight(1);
@@ -222,6 +223,12 @@ class BlockRegistry {
         let [r, g, b] = block.colorCode;
         fill(r, g, b);
         rect(x, y, 4, 10);
+
+        fill(255);
+        noStroke();
+        textSize(8);
+        textAlign(CENTER);
+        text(`${miner}`, x, y + 12);
 
         function objTotal(obj) {
           var s = 0;
@@ -556,7 +563,9 @@ class Graph {
       }
 
       let isSelfish = parseInt(vk.substring(1)) <= 3;
-      let selfishMinLead = 3;
+      let selfishLag = 0;
+      let selfishMinLead = 2;
+      let selfishAbandonLead = 2;
 
       if (kind === 'miner') {
         let {hashrate, poissonMining} = vp;
@@ -575,11 +584,23 @@ class Graph {
         let lambdaPerTick = probPerBlock / blockTimeTicks;
 
         let selectedTip = vp.tip;
-        if (selectedTip !== vp.miningTip && isLongerChain(vp.miningTip, selectedTip)) {
-          updateMiningTip(selectedTip);
+        if (!vp.miningTip) {
+          updateMiningTip(selectedTip, 'set initial mining tip');
+        } else if (selectedTip !== vp.miningTip && isLongerChain(vp.miningTip, selectedTip)) {
+          let dh = selectedTip.height - vp.miningTip.height;
+          if (isSelfish) {
+            if (dh - selfishAbandonLead >= selfishAbandonLead) {
+              let msg1 =  vp.isMining ? ' (abandons private chain)' : '';
+              updateMiningTip(selectedTip.nthParent(selfishLag), `update selfish mining tip${msg1}, dh=${dh}`);
+              vp.isMining = false;
+            }
+          } else {
+            updateMiningTip(selectedTip, `update mining tip, dh=${dh}`);
+          }
         }
 
         if (poissonMining.update(this.time, lambdaPerTick) && vp.miningTip) {
+          vp.isMining = true;
           let retargetBlocks = 50;
           let exponent = 0.2;
           let actualBlockTimeTicks = vp.miningTip.actualBlockTime(2 * retargetBlocks);
@@ -596,10 +617,11 @@ class Graph {
           console.log(vk, 'mined block', mined, this.time);
 
           let dh = mined.height - vp.tip.height;
-          if (dh >= selfishMinLead || !isSelfish) {
-            updateMiningTip(mined);
-            updateTip(mined);
+          if ((isSelfish && dh >= selfishMinLead) || !isSelfish) {
+            updateMiningTip(mined, 'broadcast selfish mined chain');
+            updateTip(mined.nthParent(selfishLag));
             broadcastBlock(mined);
+            vp.isMining = false;
           } else {
             updateMiningTip(mined, 'mined withheld block');
           }
