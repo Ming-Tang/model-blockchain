@@ -24,7 +24,7 @@ class Block {
       console.error("parent is not a block", parent);
     }
 
-    this.props = typeof props === 'object' ? props : { nodes: {} };
+    this.props = typeof props === 'object' ? props : { nodes: {}, miners: {} };
   }
 
   get colorCode() {
@@ -98,15 +98,15 @@ class Block {
     return ba;
   }
 
-  registerTip(vk) {
-    let {props: {nodes}} = this;
+  registerTip(vk, kind='nodes') {
+    let {props: {[kind]: nodes}} = this;
 
     if (!nodes.hasOwnProperty(vk)) nodes[vk] = 0;
     nodes[vk]++;
   }
 
-  unregisterTip(vk) {
-    let {props: {nodes}} = this;
+  unregisterTip(vk, kind='nodes') {
+    let {props: {[kind]: nodes}} = this;
 
     nodes[vk]--;
     if (!nodes[vk]) delete nodes[vk];
@@ -223,20 +223,33 @@ class BlockRegistry {
         fill(r, g, b);
         rect(x, y, 4, 10);
 
+        function objTotal(obj) {
+          var s = 0;
+          for (let k of Object.keys(obj)) s += obj[k];
+          return s;
+        }
+
         if (props.nodes) {
           let {nodes} = props;
-          var s = 0;
-          for (var k in nodes) {
-            if (!nodes.hasOwnProperty(k)) continue;
-            s += nodes[k];
-          }
-
+          let s = objTotal(nodes);
           if (s) {
             fill(255);
             noStroke();
             textSize(11);
             textAlign(CENTER);
             text(`${s}`, x + 4, y - 6);
+          }
+        }
+
+        if (props.miners) {
+          let {miners} = props;
+          let s = objTotal(miners);
+          if (s) {
+            fill(255, 120, 120);
+            noStroke();
+            textSize(10);
+            textAlign(CENTER);
+            text(`${s}`, x + 4, y - 16);
           }
         }
       }
@@ -439,6 +452,12 @@ class Graph {
         }
       }
 
+      function transferTip(vp, key, vk, block, kind) {
+        if (vp[key]) vp[key].unregisterTip(vk, kind);
+        vp[key] = block;
+        if (vp[key]) vp[key].registerTip(vk, kind);
+      }
+
       function updateTip(block) {
         if (!isLongerChain(vp.tip, block)) {
           return {success: false, reason: 'height'};
@@ -455,7 +474,7 @@ class Graph {
           let depth = vp.tip.height - bCA.height;
           let {maxReorgDepth = Infinity} = vp;
           if (depth > maxReorgDepth) {
-            console.log(vk, 'udpate tip: reorg: refused', { advance, depth });
+            console.log(vk, 'update tip: reorg: refused', { advance, depth });
             return {success: false, reason: 'depth'};
           }
 
@@ -463,9 +482,7 @@ class Graph {
           info = {reorg: true, advance, depth};
         }
 
-        vp.tip.unregisterTip(vk);
-        vp.tip = block;
-        vp.tip.registerTip(vk);
+        transferTip(vp, 'tip', vk, block);
 
         return {success: true, info};
       }
@@ -538,35 +555,53 @@ class Graph {
         broadcastBlock(vp.tip);
       }
 
+      let isSelfish = parseInt(vk.substring(1)) <= 3;
+      let selfishMinLead = 3;
+
       if (kind === 'miner') {
         let {hashrate, poissonMining} = vp;
+
+        if (isSelfish) hashrate *= 10;
+
+        function updateMiningTip(tip1, msg='update mining tip') {
+          transferTip(vp, 'miningTip', vk, tip1, 'miners');
+          if (msg) console.log(vk, msg, vp.miningTip, tip1);
+        }
 
         // use total hashrate as initial difficulty
         let difficulty = vp.tip.height === 0 ? Math.floor(totalHashrate * 1000) : vp.tip.difficulty;
         let blockTimeTicks = blockTime * ticksPerSecond;
         let probPerBlock = hashrate / (difficulty / 1000);
         let lambdaPerTick = probPerBlock / blockTimeTicks;
-        if (poissonMining.update(this.time, lambdaPerTick)) {
-          let miningParent = vp.tip;
+
+        let selectedTip = vp.tip;
+        if (selectedTip !== vp.miningTip && isLongerChain(vp.miningTip, selectedTip)) {
+          updateMiningTip(selectedTip);
+        }
+
+        if (poissonMining.update(this.time, lambdaPerTick) && vp.miningTip) {
           let retargetBlocks = 50;
-          let exponent = 1;
-          let actualBlockTimeTicks = miningParent.actualBlockTime(2 * retargetBlocks);
+          let exponent = 0.2;
+          let actualBlockTimeTicks = vp.miningTip.actualBlockTime(2 * retargetBlocks);
           let ratio = blockTimeTicks / actualBlockTimeTicks;
           let ratioE = Math.pow(ratio, exponent);
           var newDifficulty = difficulty;
 
-          if (miningParent.height % retargetBlocks == retargetBlocks - 1) {
+          if (vp.miningTip.height % retargetBlocks == retargetBlocks - 1) {
             newDifficulty = difficulty * ratioE;
           }
 
-          let mined = new Block({parent: miningParent, miner: vk, time: this.time, difficulty: newDifficulty});
-          vp.miningParent = null;
+          let mined = new Block({parent: vp.miningTip, miner: vk, time: this.time, difficulty: newDifficulty});
           BlockRegistry.add(mined);
           console.log(vk, 'mined block', mined, this.time);
 
-          if (true || isLongerChain(mined, vp.tip)) {
+          let dh = mined.height - vp.tip.height;
+          if (dh >= selfishMinLead || !isSelfish) {
+            updateMiningTip(mined);
             updateTip(mined);
             broadcastBlock(mined);
+          } else {
+            updateMiningTip(mined, 'mined withheld block');
           }
         }
       }
