@@ -1,14 +1,17 @@
 'use strict';
-let targetFrameRate = 20;
-let updatesPerFrame = 1;
-let ticksPerSecond = targetFrameRate * updatesPerFrame;
-let second = ticksPerSecond;
-let dTime = 1.0 / ticksPerSecond;
+const targetFrameRate = 20;
+const updatesPerFrame = 1;
+const ticksPerSecond = targetFrameRate * updatesPerFrame;
+const second = ticksPerSecond;
+const dTime = 1.0 / ticksPerSecond;
 
 function vlerp(t, v1, v2) {
   let d = v2.copy().sub(v1).mult(t);
   return v1.copy().add(d);
 }
+
+const minDifficulty = 1;
+const initDifficulty = 100;
 
 class Block {
   constructor(params) {
@@ -18,7 +21,7 @@ class Block {
     this.parent = parent || null;
     this.fork = fork || 0;
     this.time = time || 0;
-    this.difficulty = Math.floor(Math.max(difficulty, 1) || 10);
+    this.difficulty = Math.floor(Math.max(difficulty, minDifficulty) || initDifficulty);
     this.totalWork = (parent ? parent.totalWork : 0) + this.difficulty;
     if (parent && !(parent instanceof Block)) {
       console.error("parent is not a block", parent);
@@ -278,6 +281,59 @@ class BlockRegistry {
   }
 }
 
+class Miner {
+  constructor(props) {
+    if (this.constructor === Miner) {
+      console.error('Miner: abstract class.');
+    }
+  }
+
+  // mTip: block to mine on top of ('private chain')
+  // broadcast: block to broadcast
+  // update node's tip
+  res(mTip, broadcast, newTip) {
+    return {mTip, broadcast, newTip};
+  }
+
+  /** Returns new mining tip and broadcasted block. */
+  onBlockMined(tip, mTip, mined) {
+    return this.res(mined, mined);
+  }
+
+  /** Returns new mining tip. */
+  onNewTip(tip, mTip) {
+    return this.res(tip);
+  }
+}
+
+class HonestMiner extends Miner { }
+
+/** Selfish mining as described by arXiv:1311.0243 */
+class SelfishMiner extends Miner {
+  onBlockMined(tip, mTip, mined) {
+    let lead = mined.height - tip.height;
+    if (lead >= 1) {
+      return this.res(mined, mined.parentOfHeight(tip.height));
+    }
+
+    return this.res(mined);
+  }
+
+  onNewTip(tip, mTip) {
+    let lead = mTip.height - tip.height;
+    if (lead < 0) {
+      // they win
+      return this.res(tip);
+    } else if (lead === 0) {
+      // same length
+      return this.res(mTip, mTip);
+    } else {
+      // selectively reveal private chain
+      return this.res(mTip, mTip.parentOfHeight(tip.height));
+    }
+  }
+}
+
 class Vertex {
   constructor({pos, vel, kind, props}) {
     this.pos = pos || createVector();
@@ -466,6 +522,9 @@ class Graph {
       }
 
       function updateTip(block) {
+        if (!block) {
+          console.error('updateTip: not a block.');
+        }
         if (!isLongerChain(vp.tip, block)) {
           return {success: false, reason: 'height'};
         }
@@ -562,19 +621,26 @@ class Graph {
         broadcastBlock(vp.tip);
       }
 
+      // TODO mining algorithm class
       let isSelfish = parseInt(vk.substring(1)) <= 3;
-      let selfishLag = 0;
-      let selfishMinLead = 2;
-      let selfishAbandonLead = 2;
+      //let selfishLag = 0;
+      //let selfishMinLead = 2;
+      //let selfishAbandonLead = 2;
 
       if (kind === 'miner') {
-        let {hashrate, poissonMining} = vp;
+        if (!vp.miner) vp.miner = isSelfish ? new SelfishMiner() : new HonestMiner();
+
+        let {hashrate, poissonMining, miner} = vp;
 
         if (isSelfish) hashrate *= 10;
 
         function updateMiningTip(tip1, msg='update mining tip') {
           transferTip(vp, 'miningTip', vk, tip1, 'miners');
           if (msg) console.log(vk, msg, vp.miningTip, tip1);
+        }
+
+        if (!vp.miningTip) {
+          updateMiningTip(vp.tip, 'initial mining tip');
         }
 
         // use total hashrate as initial difficulty
@@ -584,23 +650,23 @@ class Graph {
         let lambdaPerTick = probPerBlock / blockTimeTicks;
 
         let selectedTip = vp.tip;
-        if (!vp.miningTip) {
-          updateMiningTip(selectedTip, 'set initial mining tip');
-        } else if (selectedTip !== vp.miningTip && isLongerChain(vp.miningTip, selectedTip)) {
-          let dh = selectedTip.height - vp.miningTip.height;
-          if (isSelfish) {
-            if (dh - selfishAbandonLead >= selfishAbandonLead) {
-              let msg1 =  vp.isMining ? ' (abandons private chain)' : '';
-              updateMiningTip(selectedTip.nthParent(selfishLag), `update selfish mining tip${msg1}, dh=${dh}`);
-              vp.isMining = false;
-            }
-          } else {
-            updateMiningTip(selectedTip, `update mining tip, dh=${dh}`);
+        if (selectedTip !== vp.miningTip && isLongerChain(vp.miningTip, selectedTip)) {
+          let {mTip, broadcast, newTip} = miner.onNewTip(vp.tip, vp.miningTip);
+          if (mTip !== vp.miningTip) {
+            updateMiningTip(mTip);
+          }
+
+          if (newTip || broadcast) {
+            updateTip(newTip || broadcast);
+          }
+
+          if (broadcast) {
+            broadcastBlock(broadcast);
           }
         }
 
         if (poissonMining.update(this.time, lambdaPerTick) && vp.miningTip) {
-          vp.isMining = true;
+          //vp.isMining = true;
           let retargetBlocks = 50;
           let exponent = 0.2;
           let actualBlockTimeTicks = vp.miningTip.actualBlockTime(2 * retargetBlocks);
@@ -616,14 +682,17 @@ class Graph {
           BlockRegistry.add(mined);
           console.log(vk, 'mined block', mined, this.time);
 
-          let dh = mined.height - vp.tip.height;
-          if ((isSelfish && dh >= selfishMinLead) || !isSelfish) {
-            updateMiningTip(mined, 'broadcast selfish mined chain');
-            updateTip(mined.nthParent(selfishLag));
+          let {mTip, broadcast, newTip} = miner.onBlockMined(vp.tip, vp.miningTip, mined);
+          if (mTip && mTip !== vp.miningTip) {
+            updateMiningTip(mTip, 'after block mined');
+          }
+
+          if (newTip || broadcast) {
+            updateTip(newTip || broadcast);
+          }
+
+          if (broadcast) {
             broadcastBlock(mined);
-            vp.isMining = false;
-          } else {
-            updateMiningTip(mined, 'mined withheld block');
           }
         }
       }
@@ -1033,7 +1102,7 @@ function draw() {
   let bt200 = tip ? tip.actualBlockTime(200).toFixed(2) / ticksPerSecond : 0;
   let bt1000 = tip ? tip.actualBlockTime(1000).toFixed(2) / ticksPerSecond : 0;
 
-  let statusText = ( ''
+  let statusText = (''
     + `Speedup: ${opts.speedup}x;  ${Math.round(getFrameRate())} fps\n`
     + `Block time: ${graph.props.blockTime} s\n`
     + `Propagation time: ${graph.props.edgeDelay} s\n`
