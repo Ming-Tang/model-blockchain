@@ -334,6 +334,67 @@ class SelfishMiner extends Miner {
   }
 }
 
+/**
+ * Mine on top of 'mineBehind' blocks behind public (that is not just published) chain.
+ * When private chain's lead is >= 'publishLead', broadcast the entire private
+ * chain.
+ * When private chain's lag is >= 'abandonLag', abandon public chain and
+ * re-create new private chain.
+ */
+class LeadSelfishMiner extends Miner {
+  constructor(props) {
+    super(props);
+    let {mineBehind = -3, abandonLag = 4, publishLead = 5, selectiveLead = 1} = props || {};
+    this.mineBehind = mineBehind;
+    this.abandonLag = abandonLag;
+    this.publishLead = publishLead;
+    this.selectiveLead = selectiveLead;
+  }
+
+  onBlockMined(tip, mTip, mined) {
+    let {publishLead, abandonLag, selectiveLead} = this;
+    let lead = mined.height - tip.height;
+    let isMining = tip !== mTip;
+    if (lead <= -abandonLag) {
+      console.error("LeadSelfishMiner::onBlockMined: can't happen.");
+    }
+
+    if (lead >= publishLead) {
+      if (typeof selectiveLead === 'number') {
+        // selectively broadcast private chain, transition to lower mining state
+        //   'publishLead - selectiveLead'
+        let newTip = mined.parentOfHeight(tip.height + selectiveLead);
+        return this.res(mined, newTip);
+      } else {
+        // broadcast private chain, transition to state 'even'
+        return this.res(mined, mined);
+      }
+    } else {
+      // still in mining state, keep private chain,
+      // transition to state (lead + 1)
+      return this.res(mined);
+    }
+  }
+
+  onNewTip(tip, mTip) {
+    let lead = mTip.height - tip.height;
+    let {publishLead, abandonLag, mineBehind} = this;
+
+    if (lead >= publishLead) {
+      console.error("LeadSelfishMiner::onNewTip: can't happen.");
+    }
+
+    if (lead <= -abandonLag) {
+      // abandon private chain due to lag, transition to state 'even'
+      return this.res(tip.nthParent(mineBehind));
+    } else {
+      // still in mining state, keep private chain,
+      // transition to state (lead + 1)
+      return this.res(mTip);
+    }
+  }
+}
+
 class Vertex {
   constructor({pos, vel, kind, props}) {
     this.pos = pos || createVector();
@@ -516,6 +577,7 @@ class Graph {
       }
 
       function transferTip(vp, key, vk, block, kind) {
+        if (vp[key] === block) return;
         if (vp[key]) vp[key].unregisterTip(vk, kind);
         vp[key] = block;
         if (vp[key]) vp[key].registerTip(vk, kind);
@@ -628,7 +690,7 @@ class Graph {
       //let selfishAbandonLead = 2;
 
       if (kind === 'miner') {
-        if (!vp.miner) vp.miner = isSelfish ? new SelfishMiner() : new HonestMiner();
+        if (!vp.miner) vp.miner = isSelfish ? new LeadSelfishMiner() : new HonestMiner();
 
         let {hashrate, poissonMining, miner} = vp;
 
