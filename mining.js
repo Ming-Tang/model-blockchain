@@ -62,7 +62,7 @@ class SelfishMiner extends Miner {
 class LeadSelfishMiner extends Miner {
   constructor(props) {
     super(props);
-    let {mineBehind = -3, abandonLag = 4, publishLead = 5, selectiveLead = 1} = props || {};
+    let {mineBehind = 3, abandonLag = 4, publishLead = 5, selectiveLead = 1} = props || {};
     this.mineBehind = mineBehind;
     this.abandonLag = abandonLag;
     this.publishLead = publishLead;
