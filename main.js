@@ -140,14 +140,19 @@ class Graph {
         vp.tip.registerTip(vk);
       }
 
+      let isSelfish = parseInt(vk.substring(1)) <= 3;
+
       if (kind === 'miner') {
-        let {hashrate, poissonMining} = vp;
-        if (!hashrate) vp.hashrate = defaultHashrate;
+        let {hashrate, miner, poissonMining} = vp;
+        if (!hashrate) vp.hashrate = isSelfish ? 10 * defaultHashrate : defaultHashrate;
         if (!poissonMining) vp.poissonMining = new PoissonProcess();
+        if (!miner) vp.miner = isSelfish ? new LeadSelfishMiner() : new HonestMiner();
         totalHashrate += vp.hashrate;
         nMiners++;
       }
     }
+
+    this.totalHashrate = totalHashrate;
 
     for (let vk of vks) {
       var {kind, props} = this.vertices[vk];
@@ -178,10 +183,10 @@ class Graph {
           if (!edges.hasOwnProperty(vk1)) continue;
 
           if (!peers[vk1]) peers[vk1] = {};
-          if (peers[vk1].tip instanceof Block
-            && !isLongerChain(peers[vk1].tip, block)) continue;
+          let {[vk1]: peer} = peers;
+          if (peer.tip instanceof Block && !isLongerChain(peer.tip, block)) continue;
 
-          peers[vk1].tip = block;
+          peer.tip = block;
           send(vk1, {block});
         }
       }
@@ -293,18 +298,8 @@ class Graph {
         broadcastBlock(vp.tip);
       }
 
-      // TODO mining algorithm class
-      let isSelfish = parseInt(vk.substring(1)) <= 3;
-      //let selfishLag = 0;
-      //let selfishMinLead = 2;
-      //let selfishAbandonLead = 2;
-
       if (kind === 'miner') {
-        if (!vp.miner) vp.miner = isSelfish ? new LeadSelfishMiner() : new HonestMiner();
-
         let {hashrate, poissonMining, miner} = vp;
-
-        if (isSelfish) hashrate *= 10;
 
         function updateMiningTip(tip1, msg='update mining tip') {
           transferTip(vp, 'miningTip', vk, tip1, 'miners');
@@ -322,14 +317,14 @@ class Graph {
         let lambdaPerTick = probPerBlock / blockTimeTicks;
 
         let selectedTip = vp.tip;
-        if (selectedTip !== vp.miningTip && isLongerChain(vp.miningTip, selectedTip)) {
+        if (selectedTip !== vp.miningTip) {
           let {mTip, broadcast, newTip} = miner.onNewTip(vp.tip, vp.miningTip);
           if (mTip !== vp.miningTip) {
             updateMiningTip(mTip);
           }
 
-          if (newTip || broadcast) {
-            updateTip(newTip || broadcast);
+          if (newTip) {
+            updateTip(newTip);
           }
 
           if (broadcast) {
@@ -359,12 +354,12 @@ class Graph {
             updateMiningTip(mTip, 'after block mined');
           }
 
-          if (newTip || broadcast) {
-            updateTip(newTip || broadcast);
+          if (newTip) {
+            updateTip(newTip);
           }
 
           if (broadcast) {
-            broadcastBlock(mined);
+            broadcastBlock(broadcast);
           }
         }
       }
@@ -784,6 +779,34 @@ function draw() {
     + `Difficulty: ${tip ? tip.difficulty : 1}`
   );
   text(statusText, width - 10, 20);
+
+  let dty = 12;
+  let ty = 10 + dty;
+  let {totalHashrate} = graph;
+  let x = (h) => 50 + (100.0 * h) / (1.0 * totalHashrate);
+
+  for (let vk of graph.getVertexKeys()) {
+    let node = graph.vertices[vk];
+    if (node.kind !== 'miner') continue;
+
+    fill(255);
+    noStroke();
+    textSize(10);
+    textAlign(LEFT);
+    text(vk, 10, ty);
+
+    strokeWeight(2);
+    stroke(255, 100, 100);
+    line(x(0), ty, x(node.props.hashrate), ty);
+
+    ty += dty;
+  }
+
+  strokeWeight(1);
+  stroke(255, 255, 255, 50);
+  for (var i = 0; i <= 5; i++) {
+    line(x(i * totalHashrate * 0.1), 10, x(i * totalHashrate * 0.1), ty);
+  }
 }
 
 function mousePos() { return createVector(mouseX, mouseY); }
