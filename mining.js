@@ -28,27 +28,42 @@ class HonestMiner extends Miner { }
 
 /** Selfish mining as described by arXiv:1311.0243 */
 class SelfishMiner extends Miner {
+  getAdvanceHeight(lead) {
+    return lead >= 10 ? Math.floor(Math.log10(lead)) : 0;
+  }
+
   onBlockMined(tip, mTip, mined) {
     let lead = mined.height - tip.height;
-    if (lead >= 2) {
+    let pbl = mined.height - mined.commonAncestor(tip).height;
+
+    if (lead === 1 && pbl === 2) {
       return this.res(mined, mined, mined);
     }
 
-    return this.res(mined, null, tip);
+    return this.res(
+      mined,
+      mined.parentOfHeight(tip.height) + this.getAdvanceHeight(lead),
+      tip);
   }
 
   onNewTip(tip, mTip) {
     let lead = mTip.height - tip.height;
+
     if (lead < 0) {
       // they win
       return this.res(tip, null, tip);
     } else if (lead === 0) {
       // same length
       return this.res(mTip, mTip, tip);
+    } else if (lead === 1) {
+      // broadcast private chain
+      return this.res(mTip, mTip, tip);
     } else {
-      // selectively reveal private chain
-      let b = mTip.parentOfHeight(tip.height + 1);
-      return this.res(mTip, b, b);
+      // broadcast part of private chain
+      return this.res(
+        mTip,
+        mTip.parentOfHeight(tip.height) + this.getAdvanceHeight(lead),
+        tip);
     }
   }
 }

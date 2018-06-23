@@ -146,7 +146,7 @@ class Graph {
         let {hashrate, miner, poissonMining} = vp;
         if (!hashrate) vp.hashrate = isSelfish ? 10 * defaultHashrate : defaultHashrate;
         if (!poissonMining) vp.poissonMining = new PoissonProcess();
-        if (!miner) vp.miner = isSelfish ? new LeadSelfishMiner() : new HonestMiner();
+        if (!miner) vp.miner = isSelfish ? new SelfishMiner() : new HonestMiner();
         totalHashrate += vp.hashrate;
         nMiners++;
       }
@@ -263,14 +263,16 @@ class Graph {
         receivedJoined = inbox.filter(({message}) => message.joined);
       }
 
+      let tipUpdated = null;
+
       if (received) {
-        var sender = null;
+        let sender = null;
         //console.log(vk, 'received', received);
 
         let {shouldBroadcast, best} = findBestFromReceivedBlocks(received);
 
         if (best) {
-          updateTip(best.message.block);
+          updateTip(tipUpdated = best.message.block);
           if (!vp.disableRelayBlock) broadcastBlock(vp.tip);
         } else if (shouldBroadcast) {
           // broadcast to peers with lower block
@@ -316,8 +318,7 @@ class Graph {
         let probPerBlock = hashrate / (difficulty / 1000);
         let lambdaPerTick = probPerBlock / blockTimeTicks;
 
-        let selectedTip = vp.tip;
-        if (selectedTip !== vp.miningTip) {
+        if (tipUpdated) {
           let {mTip, broadcast, newTip} = miner.onNewTip(vp.tip, vp.miningTip);
           if (mTip !== vp.miningTip) {
             updateMiningTip(mTip);
